@@ -1,0 +1,4 @@
+# This file ensures the data/HDFS_v1/ directory is tracked by Git.
+# The actual HDFS.log file (~1.5 GB) is excluded via .gitignore.
+# Download from: https://zenodo.org/record/3227177
+# Extract: HDFS.log and anomaly_label.csv into this directory.

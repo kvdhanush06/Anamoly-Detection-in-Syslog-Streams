@@ -1,0 +1,4 @@
+# This file ensures the data/BGL/ directory is tracked by Git.
+# The actual BGL.log file (~700 MB) is excluded via .gitignore.
+# Download from: https://zenodo.org/record/3227177
+# Extract: BGL.log into this directory.

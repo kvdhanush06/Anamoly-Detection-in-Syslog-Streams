@@ -1,2 +1,44 @@
+# ── Virtual environments ───────────────────────────────────────────────────────
 venv/
-data/
+.venv/
+env/
+
+# ── Large dataset files (downloaded from Zenodo) ──────────────────────────────
+# Keep data/ directory tracked but ignore the heavy raw log files
+data/HDFS_v1/HDFS.log
+data/BGL/BGL.log
+
+# ── Python cache & compiled files ─────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# ── Distribution / packaging ──────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+*.egg
+
+# ── macOS metadata ────────────────────────────────────────────────────────────
+.DS_Store
+**/.DS_Store
+
+# ── IDE / editor settings ─────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Jupyter notebook checkpoints ─────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── HuggingFace / Transformers model cache ────────────────────────────────────
+# (BERT weights downloaded at runtime — do not commit)
+~/.cache/huggingface/
+.cache/
+
+# ── Temporary files ────────────────────────────────────────────────────────────
+*.tmp
+*.log
