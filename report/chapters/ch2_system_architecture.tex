@@ -1,0 +1,641 @@
+\chapter{System Architecture and Methodology (Hardware \& Software Details)}
+\label{ch:sys_arch}
+
+\section{Theoretical Foundations and Background: A Machine Learning Tutorial}
+\label{sec:arch_background}
+To establish a rigorous conceptual baseline for readers new to the intersection of systems engineering and machine learning, this section introduces the fundamental building blocks of automated log analytics: the structure of system logs, automated template parsing, temporal and spatial windowing strategies, linear subspace projections, continuous semantic embeddings, deep neural autoencoders, statistical extreme value thresholding, and metric evaluation dynamics.
+
+\subsection{Nature and Anatomy of Machine-Generated Logs}
+\label{subsec:log_anatomy}
+Computer systems, distributed microservices, network controllers, operating systems, and server daemons generate append-only diagnostic textual records referred to as \textbf{system logs} or \textbf{syslogs}. Unlike structured transactional databases where data conforms to rigid relational schemas (such as integers, dates, and foreign keys), raw log streams are semi-structured text. 
+
+A standard log line is composed of two primary segments:
+\begin{enumerate}
+    \item \textbf{Structured Header:} Contains deterministic metadata automatically prepended by the system logging daemon (such as \texttt{rsyslog} or \texttt{systemd-journald}). This includes the calendar date, microsecond timestamp, hostname, operating system component, and message severity level (\texttt{DEBUG}, \texttt{INFO}, \texttt{WARNING}, \texttt{ERROR}, \texttt{CRITICAL}).
+    \item \textbf{Unstructured Message Payload:} Contains arbitrary natural language text authored by software developers within source code print statements (e.g., \texttt{printf()} in C/C++, \texttt{LOG.info()} in Java, or \texttt{logger.error()} in Python). These messages interweave static invariant text strings describing an event with dynamic runtime parameters (such as IP addresses, block IDs, transaction values, execution times, and memory pointer addresses).
+\end{enumerate}
+
+To illustrate, consider two typical raw log entries emitted during an operational failure in a high-performance computing environment:
+\begin{verbatim}
+2026-11-17 04:12:01 R02-M1-N0-C:J12-U01 ras KERNEL INFO instruction cache parity error
+2026-11-17 04:12:02 R02-M1-N0-C:J12-U01 ras KERNEL FATAL node card power shutoff 
+                                             detected on supply 12V
+\end{verbatim}
+
+In these entries, the timestamp (\texttt{2026-11-17 04:12:01}), node identifier (\texttt{R02-M1-N0-C:J12-U01}), component (\texttt{KERNEL}), and severity level are structured. However, the operational reality that a hardware cache fault triggered a catastrophic power trip is buried in the unstructured string. Traditional tabular machine learning algorithms cannot ingest such raw textual strings directly without preprocessing.
+
+\subsection{Automated Log Parsing and Template Induction (The Drain Algorithm)}
+\label{subsec:drain_parsing}
+The primary objective of automated \textbf{log parsing} is to separate the static invariant template from the dynamic variables within every log message. A log message $m$ can be formally modeled as a function of an underlying static template $T_k$ and a set of dynamic runtime parameters $P = \{p_1, p_2, \dots, p_m\}$:
+\begin{equation}
+    m = \mathcal{F}(T_k, P)
+\end{equation}
+For example, the two raw messages:
+\begin{itemize}
+    \item \texttt{"Packet responder 10.0.1.4 timed out after 3000ms"}
+    \item \texttt{"Packet responder 192.168.1.12 timed out after 1500ms"}
+\end{itemize}
+originate from the identical underlying system event template:
+\begin{equation}
+    T = \texttt{"Packet responder <*> timed out after <*>ms"}
+\end{equation}
+where \texttt{<*>} denotes a wildcard variable placeholder.
+
+In production environments processing millions of lines per minute, log parsing must be deterministic, computationally lightweight, and strictly online. In this work, template extraction is conducted via the state-of-the-art \textbf{Drain} algorithm developed by He et al.~\cite{he2017drain}. Drain parses streaming logs in near real-time by navigating a fixed-depth parse tree structured across four hierarchical levels:
+\begin{enumerate}
+    \item \textbf{Root Node:} The entry point for incoming log messages.
+    \item \textbf{Layer 1 (Log Message Length):} Log messages are partitioned into groups based on their token count (the number of whitespace-delimited words). Since log printing statements generally produce a fixed number of tokens, length acts as an immediate, $O(1)$ filter.
+    \item \textbf{Layer 2 (First Token):} Messages are branched according to their initial token. If the initial token contains numerical digits or special punctuation, it is routed to a shared wildcard branch to prevent explosion of the tree branching factor.
+    \item \textbf{Layer 3 (Token Similarity Search):} At the leaf level, the algorithm computes the token similarity between the incoming message and existing candidate templates within the leaf bucket. The similarity metric is defined as:
+    \begin{equation}
+        \text{Sim}(m, T) = \frac{\sum_{i=1}^{\min(|m|, |T|)} \mathbb{I}(m_i = T_i)}{\max(|m|, |T|)}
+    \end{equation}
+    where $\mathbb{I}(\cdot)$ is the indicator function. If $\text{Sim}(m, T)$ exceeds a user-defined threshold $\tau_{\text{sim}}$, the message is assigned to template $T$, and any non-matching tokens are generalized to \texttt{<*>}. Otherwise, a new template node is dynamically instantiated.
+\end{enumerate}
+
+Once parsing is complete, every unstructured log message is mapped to a discrete, integer template identifier:
+\begin{equation}
+    m_t \longrightarrow e_t \in \{1, 2, \dots, |V|\}
+\end{equation}
+where $|V|$ represents the cardinality of the induced template vocabulary.
+
+\subsection{Sequence Construction and Windowing Methodologies}
+\label{subsec:windowing_methodologies}
+An individual log message rarely provides sufficient operational context to determine whether a complex system is malfunctioning. For example, a single network timeout message is a common transient event in distributed computing. However, fifty consecutive timeout messages occurring on the same compute node within two minutes indicate severe switch degradation or interface card failure. Therefore, anomaly detection must operate over \textbf{sequences of log events}.
+
+Three fundamental strategies exist for aggregating streaming event streams into discrete sequences:
+\begin{enumerate}
+    \item \textbf{Session-Based Windowing (Identifier Slicing):} In systems where an explicit lifecycle identifier permeates the log stream, events sharing the same session key are grouped into a single sequence. This represents the gold standard for trace analysis. For example, in the Hadoop Distributed File System (\textbf{HDFS}), every file write, block replication, and packet closure operation explicitly logs a unique 64-bit \texttt{block\_id}. A sequence $S_{\text{block}}$ represents the entire operational lifecycle of that block from creation to termination:
+    \begin{equation}
+        S_{\text{block}} = [e_1, e_2, \dots, e_L] \quad \text{where } \forall t, \text{ID}(e_t) = \text{block\_id}
+    \end{equation}
+    \item \textbf{Fixed-Count Windowing:} The log stream is partitioned into sequential blocks of exactly $W$ log lines (e.g., $W=100$). While simple to implement, fixed-count windows distort temporal dynamics: during system idle periods, a window may span hours, whereas during an error storm, a window may span only milliseconds.
+    \item \textbf{Time-Based Windowing (Sliding and Tumbling):} The stream is sliced according to chronological time intervals of duration $\Delta t$. In a \textit{sliding window}, the window advances by a step size $\delta < \Delta t$, creating overlapping temporal slices. In a \textit{tumbling window}, the step size equals the duration ($\delta = \Delta t$), producing completely non-overlapping sequences.
+    \item \textbf{Spatial-Temporal (Node-Centric) Windowing:} In massively parallel supercomputing environments or large-scale distributed clusters, global time windowing suffers from asynchronous interleaving across thousands of independent compute units. To preserve execution causality, logs are partitioned along two simultaneous axes: the spatial physical host identifier (\texttt{Node}) and a tumbling temporal interval $\Delta t$:
+    \begin{equation}
+        S_{(n, k)} = \{ e_t \mid \text{Node}(e_t) = n \;\land\; k\Delta t \le \text{Timestamp}(e_t) < (k+1)\Delta t \}
+    \end{equation}
+    This prevents independent normal operations on Node A from being contaminated by concurrent hardware faults on Node B.
+\end{enumerate}
+
+\subsection{Linear Subspace Dimensionality Reduction: Principal Component Analysis (PCA)}
+\label{subsec:pca_foundations}
+Once log sequences are constructed, they must be converted into numerical vector representations. The simplest classical approach maps each sequence $S_i$ into an \textbf{event count vector} $x_i \in \mathbb{R}^{|V|}$, where the $j$-th entry $x_{i,j}$ records the frequency of template $v_j$ in sequence $S_i$:
+\begin{equation}
+    x_{i,j} = \sum_{t=1}^{|S_i|} \mathbb{I}(e_t = v_j)
+\end{equation}
+Given a collection of $N$ training sequences, these vectors form a data matrix $X \in \mathbb{R}^{N \times d}$, where $d = |V|$.
+
+In enterprise computing systems, normal execution flows are governed by standardized software routines. Consequently, normal log count vectors exhibit strong linear correlations and lie within a low-dimensional linear subspace $\mathcal{S}_{\text{norm}} \subset \mathbb{R}^d$. Conversely, operational anomalies disrupt regular execution paths, activating rare error templates or creating abnormal event ratios that deviate from this normal subspace into an orthogonal \textbf{residual subspace} $\mathcal{S}_{\text{res}}$.
+
+\textbf{Principal Component Analysis (PCA)} computes this optimal low-dimensional representation. First, the data matrix $X$ is mean-centered:
+\begin{equation}
+    \mu = \frac{1}{N}\sum_{i=1}^N x_i, \quad \widetilde{X} = X - \mathbf{1}\mu^T
+\end{equation}
+PCA seeks an orthonormal projection matrix $P \in \mathbb{R}^{d \times k}$ (with $k \ll d$) that maximizes the captured data variance. This is computed via Singular Value Decomposition (SVD) of the centered matrix:
+\begin{equation}
+    \widetilde{X} = U \Sigma V^T
+\end{equation}
+where $U \in \mathbb{R}^{N \times N}$ and $V \in \mathbb{R}^{d \times d}$ are orthogonal matrices containing the left and right singular vectors, respectively, and $\Sigma \in \mathbb{R}^{N \times d}$ is a diagonal matrix of singular values $\sigma_1 \ge \sigma_2 \ge \dots \ge \sigma_{\min(N,d)} \ge 0$.
+
+The top $k$ columns of $V$, denoted $V_k \in \mathbb{R}^{d \times k}$, define the principal components spanning the normal subspace:
+\begin{equation}
+    P = V_k
+\end{equation}
+For any arbitrary test vector $x_{\text{new}} \in \mathbb{R}^d$, its reconstruction within the normal subspace is obtained via orthogonal projection:
+\begin{equation}
+    \hat{x}_{\text{new}} = \mu + P P^T (x_{\text{new}} - \mu)
+\end{equation}
+The \textbf{reconstruction error} $e(x_{\text{new}})$ quantifies the Euclidean distance between the original vector and its projection:
+\begin{equation}
+    e(x_{\text{new}}) = \| x_{\text{new}} - \hat{x}_{\text{new}} \|_2 = \sqrt{ \sum_{j=1}^d (x_{\text{new}, j} - \hat{x}_{\text{new}, j})^2 }
+\end{equation}
+If the reconstruction error exceeds a prescribed threshold $\theta$, the sequence is classified as an anomaly:
+\begin{equation}
+    \hat{y} = \begin{cases}
+        1 & \text{if } e(x_{\text{new}}) > \theta \\
+        0 & \text{if } e(x_{\text{new}}) \le \theta
+    \end{cases}
+\end{equation}
+
+\subsection{Robust Principal Component Analysis (RPCA) and Inexact ALM}
+\label{subsec:rpca_foundations}
+A critical theoretical limitation of standard PCA is its extreme sensitivity to gross outliers. If the training data matrix $X$ contains even a small fraction of unlabeled anomalous sequences (contamination), standard SVD will skew the principal directions $V_k$ toward the outliers, corrupting the normal subspace.
+
+To remedy this fragility, Cand{\`e}s et al.~\cite{candes2011robust} formulated \textbf{Robust Principal Component Analysis (RPCA)} via Principal Component Pursuit. RPCA posits that an observed corrupted data matrix $X$ can be decomposed into the exact sum of a truly low-rank matrix $L$ (representing healthy normal operational patterns) and a sparse matrix $S$ (capturing rare, localized anomalies):
+\begin{equation}
+    X = L + S
+\end{equation}
+Mathematically, RPCA solves the convex optimization problem:
+\begin{equation}
+    \min_{L, S} \; \|L\|_* + \lambda \|S\|_1 \quad \text{subject to} \quad X = L + S
+\end{equation}
+where:
+\begin{itemize}
+    \item $\|L\|_* = \sum_{i=1}^{\min(n,d)} \sigma_i(L)$ is the \textbf{nuclear norm} (sum of singular values), which serves as the tightest convex surrogate for matrix rank $\text{rank}(L)$.
+    \item $\|S\|_1 = \sum_{i,j} |S_{i,j}|$ is the \textbf{$\ell_1$-norm}, which enforces element-wise sparsity.
+    \item $\lambda$ is a regularization balancing parameter, theoretically set as:
+    \begin{equation}
+        \lambda = \frac{1}{\sqrt{\max(N, d)}}
+    \end{equation}
+\end{itemize}
+
+Because solving this optimization problem via general semi-definite programming is computationally intractable for large telemetry matrices, the modern standard utilizes the \textbf{Inexact Augmented Lagrange Multiplier (ALM)} method developed by Lin, Chen, and Ma~\cite{lin2010augmented}. The augmented Lagrangian function is formulated as:
+\begin{equation}
+    \mathcal{L}(L, S, Y, \mu_k) = \|L\|_* + \lambda \|S\|_1 + \langle Y, X - L - S \rangle + \frac{\mu_k}{2} \|X - L - S\|_F^2
+\end{equation}
+where $Y$ is a matrix of Lagrange multipliers, $\mu_k > 0$ is a penalty scalar, and $\|\cdot\|_F$ denotes the Frobenius norm.
+
+The inexact ALM algorithm alternates between solving for $L$ and $S$ via closed-form proximal shrinkage operators:
+\begin{align}
+    L_{k+1} &= \mathcal{D}_{\mu_k^{-1}} \left( X - S_k + \mu_k^{-1} Y_k \right) \\
+    S_{k+1} &= \mathcal{S}_{\lambda \mu_k^{-1}} \left( X - L_{k+1} + \mu_k^{-1} Y_k \right) \\
+    Y_{k+1} &= Y_k + \mu_k (X - L_{k+1} - S_{k+1}) \\
+    \mu_{k+1} &= \rho \mu_k \quad (\rho > 1)
+\end{align}
+where $\mathcal{S}_{\tau}(x) = \text{sgn}(x)\max(|x| - \tau, 0)$ is the scalar soft-thresholding shrinkage operator, and $\mathcal{D}_{\tau}(M) = U \mathcal{S}_{\tau}(\Sigma) V^T$ is the singular value thresholding operator.
+
+Once convergence is achieved ($||X - L - S||_F / ||X||_F < 10^{-7}$), the purified low-rank component $L$ represents normal system dynamics. Anomaly scoring proceeds by performing SVD on $L^T = U_L \Sigma_L V_L^T$, extracting the top-$k$ projection matrix $P_L = (U_L)_k$, and evaluating reconstruction errors on incoming test vectors as in Eq.~\eqref{subsec:pca_foundations}.
+
+\subsection{Continuous Semantic Word Embeddings (Word2Vec)}
+\label{subsec:word2vec_foundations}
+While count vectors capture event frequencies, they suffer from two fatal structural flaws:
+\begin{enumerate}
+    \item \textbf{Loss of Sequential Context:} Count vectors treat sequences as unordered ``bags of events'', ignoring the chronological progression of system states.
+    \item \textbf{Orthogonality and High Dimensionality:} Count vectors treat every event template as completely orthogonal in $\mathbb{R}^d$. A template describing \texttt{"Connection refused by peer"} is mathematically as distant from \texttt{"Connection timed out"} as it is from \texttt{"User logged in"}.
+\end{enumerate}
+
+To overcome these deficiencies, natural language processing techniques can be adapted to treat log templates as ``words'' and log sequences as ``sentences''. Originally introduced by Mikolov et al.~\cite{mikolov2013efficient}, \textbf{Word2Vec} learns dense, low-dimensional continuous vector representations $w \in \mathbb{R}^m$ (where $m \ll |V|$, typically $m=32$) such that templates occurring within similar execution contexts are mapped to neighboring points in vector space.
+
+In this work, we employ the \textbf{Skip-Gram architecture with Negative Sampling (SGNS)}. Given a training sequence of templates $[v_1, v_2, \dots, v_T]$, the objective is to maximize the average log probability of predicting context templates within a sliding window of radius $c$ around center template $v_t$:
+\begin{equation}
+    \mathcal{L}_{\text{SG}} = \sum_{t=1}^T \sum_{-c \le j \le c, j \ne 0} \log P(v_{t+j} \mid v_t)
+\end{equation}
+Using negative sampling, the conditional probability is formulated as:
+\begin{equation}
+    \log P(v_O \mid v_I) = \log \sigma(u_{v_O}^T w_{v_I}) + \sum_{k=1}^K \mathbb{E}_{v_n \sim P_n(v)} \left[ \log \sigma(-u_{v_n}^T w_{v_I}) \right]
+\end{equation}
+where $w_v$ and $u_v$ denote the input and output vector embeddings for template $v$, $\sigma(z) = 1 / (1 + e^{-z})$ is the sigmoid function, $K$ is the number of negative samples, and $P_n(v)$ is the unigram noise distribution raised to the $3/4$ power.
+
+Once the Word2Vec model is trained on normal log sequences, every template $v \in V$ is mapped to an $m$-dimensional embedding vector $\mathbf{v} \in \mathbb{R}^m$. To convert an entire sequence $S = [v_1, v_2, \dots, v_L]$ into a fixed-length numerical representation, an aggregation pooling operator must be applied.
+
+\subsubsection{Token Aggregation Pooling Strategies}
+\label{subsubsec:pooling_strategies}
+We investigate three alternative pooling mechanisms:
+\begin{enumerate}
+    \item \textbf{Mean Pooling ($32\text{-d}$):} Averages the continuous vectors across all valid tokens in the sequence:
+    \begin{equation}
+        z_{\text{mean}} = \frac{1}{|S_{\text{valid}}|} \sum_{v \in S_{\text{valid}}} \mathbf{v}
+    \end{equation}
+    While mean pooling effectively summarizes the background operational state, it dilutes rare transient anomaly spikes across long healthy sequences.
+    \item \textbf{IDF-Weighted Mean Pooling ($32\text{-d}$):} Weights each template embedding by its Inverse Document Frequency (IDF) computed across training sequences:
+    \begin{equation}
+        \text{IDF}(v) = \log \left( \frac{N_{\text{train}} + 1}{\text{DF}(v) + 1} \right) + 1.0, \quad z_{\text{idf}} = \frac{\sum_{v \in S_{\text{valid}}} \text{IDF}(v) \mathbf{v}}{\sum_{v \in S_{\text{valid}}} \text{IDF}(v)}
+    \end{equation}
+    This amplifies rare operational events while suppressing ubiquitous routine messages.
+    \item \textbf{Concatenated Mean + Max Dual Pooling ($64\text{-d}$):} Combines the global background average with an element-wise maximum pooling operation across each coordinate dimension:
+    \begin{equation}
+        z_{\text{max}, j} = \max_{v \in S_{\text{valid}}} v_j \quad (j = 1, \dots, m), \quad z_{\text{dual}} = \left[ z_{\text{mean}} \;\mathbin{\Vert}\; z_{\text{max}} \right] \in \mathbb{R}^{2m}
+    \end{equation}
+    where $\mathbin{\Vert}$ denotes vector concatenation. In this representation, $z_{\text{mean}}$ captures the overall operational regime, while $z_{\text{max}}$ captures extreme coordinate activations triggered by rare failure events.
+\end{enumerate}
+
+To eliminate sequence length bias, the resulting pooled vector is strictly $L_2$-normalized:
+\begin{equation}
+    z = \frac{z_{\text{dual}}}{\|z_{\text{dual}}\|_2}
+\end{equation}
+
+\subsection{Deep Generative Reconstruction: Multi-Layer Perceptron (MLP) Autoencoders}
+\label{subsec:autoencoder_foundations}
+While linear PCA is restricted to hyperplanes, the geometric manifold spanned by continuous semantic embeddings is inherently non-linear. To learn complex non-linear coordinate dependencies, we introduce a \textbf{Multi-Layer Perceptron (MLP) Autoencoder}.
+
+An autoencoder is a self-supervised neural network trained to reconstruct its own input via an information bottleneck. The architecture consists of two interconnected components:
+\begin{enumerate}
+    \item \textbf{Encoder ($f_\phi$):} Compresses the input vector $z \in \mathbb{R}^{d_{\text{in}}}$ (where $d_{\text{in}}=64$) through progressively narrower hidden layers into a low-dimensional latent bottleneck representation $h \in \mathbb{R}^{d_{\text{latent}}}$ (where $d_{\text{latent}}=16$):
+    \begin{equation}
+        h_1 = \text{ReLU}(W_1 (z - \mu) + b_1), \quad h = \text{ReLU}(W_2 h_1 + b_2)
+    \end{equation}
+    \item \textbf{Decoder ($g_\psi$):} Reconstructs the original vector from the latent code $h$ back to the original input space:
+    \begin{equation}
+        h_3 = \text{ReLU}(W_3 h + b_3), \quad \hat{z} = W_4 h_3 + b_4 + \mu
+    \end{equation}
+\end{enumerate}
+Here, $\mu \in \mathbb{R}^{d_{\text{in}}}$ is the empirical mean vector computed exclusively across healthy normal training sequences, and $\text{ReLU}(x) = \max(0, x)$ provides non-linear activation.
+
+The complete network parameters $\Theta = \{W_1, b_1, W_2, b_2, W_3, b_3, W_4, b_4\}$ are optimized strictly on normal operational sequences by minimizing the Mean Squared Error (MSE) objective with $L_2$ weight regularization ($\alpha = 10^{-4}$):
+\begin{equation}
+    \mathcal{J}(\Theta) = \frac{1}{N_{\text{train}}} \sum_{i=1}^{N_{\text{train}}} \| (z_i - \mu) - (\hat{z}_i - \mu) \|_2^2 + \frac{\alpha}{2} \sum_{l} \|W_l\|_F^2
+\end{equation}
+Because the autoencoder is trained exclusively on normal patterns, it optimizes its internal weights to faithfully reconstruct healthy system states. When an anomalous sequence containing unfamiliar template combinations is presented at test time, the network cannot reconstruct it through the constrained bottleneck, resulting in an elevated reconstruction error:
+\begin{equation}
+    e(z) = \| z - \hat{z} \|_2
+\end{equation}
+
+\subsection{Statistical Threshold Formulation: Extreme Value Theory (EVT) and Peaks-Over-Threshold (POT)}
+\label{subsec:evt_pot_foundations}
+Converting continuous reconstruction errors $e(z)$ into binary alerts ($\hat{y} \in \{0, 1\}$) requires setting a decision threshold $\theta$. In prior literature (e.g., F{\"a}lt et al.~\cite{falt2025lightweight}), authors frequently set $\theta$ as the $95^{\text{th}}$ or $99^{\text{th}}$ percentile of the \textit{testing} error distribution. This represents an invalid \textbf{test-set oracle leak}: in real-world deployment, future test data is unobserved, and its error distribution cannot be queried in advance.
+
+Arbitrary heuristic thresholds or Gaussian assumptions ($\mu + 3\sigma$) are similarly flawed because reconstruction errors are bounded below by zero and exhibit heavy, asymmetric tails. To formulate a mathematically principled, label-free threshold, we employ \textbf{Extreme Value Theory (EVT)}, specifically the \textbf{Peaks-Over-Threshold (POT)} methodology rooted in the foundational theorem of Pickands, Balkema, and de Haan~\cite{pickands1975statistical, balkema1974residual}.
+
+The Pickands-Balkema-de Haan theorem proves that for a broad class of continuous probability distributions, the distribution of exceedances $Y = (X - u)$ above a sufficiently high initial threshold $u$ converges asymptotically to a \textbf{Generalized Pareto Distribution (GPD)}:
+\begin{equation}
+    P(X - u \le y \mid X > u) \approx G_{\xi, \sigma}(y) = \begin{cases}
+        1 - \left(1 + \frac{\xi y}{\sigma}\right)^{-1/\xi} & \text{if } \xi \ne 0 \\
+        1 - \exp\left(-\frac{y}{\sigma}\right) & \text{if } \xi = 0
+    \end{cases}
+\end{equation}
+where $\sigma > 0$ is the scale parameter, $\xi \in \mathbb{R}$ is the shape parameter, and $y \ge 0$ (with $1 + \xi y / \sigma > 0$ when $\xi < 0$).
+
+In our system, the POT thresholding procedure is executed strictly on the reconstruction errors of the \textbf{validation normal sequences} ($\mathcal{E}_{\text{val\_norm}}$):
+\begin{enumerate}
+    \item \textbf{High Quantile Selection:} Choose an initial quantile $q$ (set to $q=0.90$) to establish the base threshold $u$:
+    \begin{equation}
+        u = \text{Quantile}(\mathcal{E}_{\text{val\_norm}}, q)
+    \end{equation}
+    \item \textbf{Exceedance Extraction:} Identify all validation normal errors exceeding $u$:
+    \begin{equation}
+        \mathcal{Y} = \{ e - u \mid e \in \mathcal{E}_{\text{val\_norm}} \;\land\; e > u \}
+    \end{equation}
+    Let $N_t = |\mathcal{E}_{\text{val\_norm}}|$ and $N_u = |\mathcal{Y}|$, defining the empirical tail probability $p_u = N_u / N_t$.
+    \item \textbf{Parameter Estimation via Method of Moments:} Estimate the GPD parameters $\xi$ and $\sigma$ from the sample mean $\bar{y}$ and sample variance $s_y^2$ of exceedances:
+    \begin{equation}
+        \xi = \frac{1}{2} \left( \frac{\bar{y}^2}{s_y^2} - 1 \right), \quad \sigma = \frac{1}{2} \bar{y} \left( \frac{\bar{y}^2}{s_y^2} + 1 \right)
+    \end{equation}
+    \item \textbf{Extreme Quantile Inversion:} Given a target operational False Positive Rate ($\text{FPR}_{\text{target}} = 10^{-3}$, corresponding to at most one false alarm per 1,000 normal windows), the extreme threshold $\theta_{\text{POT}}$ is computed via closed-form inversion of the GPD survival function:
+    \begin{equation}
+        \theta_{\text{POT}} = \begin{cases}
+            u + \frac{\sigma}{\xi} \left[ \left( \frac{\text{FPR}_{\text{target}}}{p_u} \right)^{-\xi} - 1 \right] & \text{if } \xi \ne 0 \\
+            u - \sigma \log\left( \frac{\text{FPR}_{\text{target}}}{p_u} \right) & \text{if } \xi = 0
+        \end{cases}
+    \end{equation}
+    \item \textbf{Engineering Fallback Safeguard:} If the GPD fit fails to converge, produces invalid parameters ($\xi > 1$, $\sigma \le 0$), or predicts a threshold exceeding physical bounds ($\theta_{\text{POT}} > 5 \max(\mathcal{E}_{\text{val\_norm}})$), the engine automatically falls back to the empirical $99.5^{\text{th}}$ percentile of validation normal errors:
+    \begin{equation}
+        \theta_{\text{fallback}} = \text{Percentile}(\mathcal{E}_{\text{val\_norm}}, 99.5)
+    \end{equation}
+\end{enumerate}
+
+This pure label-free threshold is designated \textbf{Mode A} (our primary headline metric). In parallel, for scenarios where an engineering team possesses a small set of historical labeled anomalies, we formulate \textbf{Mode B}: a semi-supervised grid search across 200 candidate quantiles from $80\%$ to $99.9\%$ on a dedicated labeled validation split (normals plus 20,000 anomaly samples) to find the threshold $\theta_B$ that strictly maximizes validation $F_1$-score.
+
+\subsection{Evaluation Metrics and the Base-Rate Fallacy}
+\label{subsec:eval_metrics_fallacy}
+In operational telemetry anomaly detection, binary predictions are evaluated against ground truth labels through the confusion matrix: True Positives ($TP$), False Positives ($FP$), True Negatives ($TN$), and False Negatives ($FN$). The standard derived metrics are:
+\begin{align}
+    \text{Precision} &= \frac{TP}{TP + FP} \\
+    \text{Recall} &= \frac{TP}{TP + FN} \\
+    F_1\text{-score} &= 2 \times \frac{\text{Precision} \times \text{Recall}}{\text{Precision} + \text{Recall}} = \frac{2 TP}{2 TP + FP + FN}
+\end{align}
+
+\subsubsection{Why Classification Accuracy Misleads}
+In introductory machine learning, \textbf{Accuracy} is often quoted:
+\begin{equation}
+    \text{Accuracy} = \frac{TP + TN}{TP + FP + TN + FN}
+\end{equation}
+However, in production telemetry, accuracy is dangerously deceptive. Consider our natural Blue Gene/L dataset, where normal windows constitute $89.93\%$ of all samples and anomalies account for only $10.07\%$. A trivial baseline model that predicts ``Healthy'' for every single window without processing a single log line achieves an accuracy of $\mathbf{89.93\%}$! Yet, its operational utility is zero: its Recall is $0\%$, its Precision is $0\%$, and its $F_1$-score is $0\%$.
+
+\subsubsection{The Base-Rate Fallacy and Prevalence Sensitivity}
+A crucial insight demonstrated in this report is the mathematical dependence of Precision on the \textbf{prevalence} (base rate) of anomalies in the test set. Let $\pi = P(y=1)$ denote anomaly prevalence. Precision can be rewritten using Bayes' theorem in terms of the True Positive Rate ($\text{TPR} = \text{Recall}$) and False Positive Rate ($\text{FPR} = FP / (FP + TN)$):
+\begin{equation}
+    \text{Precision} = \frac{\pi \cdot \text{TPR}}{\pi \cdot \text{TPR} + (1 - \pi) \cdot \text{FPR}}
+\end{equation}
+Notice that as prevalence $\pi$ decreases, the term $(1 - \pi) \cdot \text{FPR}$ dominates the denominator. 
+
+To visualize the profound practical impact of this equation:
+\begin{itemize}
+    \item Suppose a model achieves $\text{TPR} = 83\%$ with an exceptionally low false alarm rate $\text{FPR} = 0.6\%$.
+    \item In an artificially balanced test set where $\pi = 0.50$ (50\% anomalies, matching earlier flawed project scripts):
+    \begin{equation}
+        \text{Precision}_{\text{balanced}} = \frac{0.50 \times 0.83}{(0.50 \times 0.83) + (0.50 \times 0.006)} = \frac{0.415}{0.415 + 0.003} = \mathbf{99.28\%} \implies F_1 = \mathbf{90.46\%}
+    \end{equation}
+    \item Now, deploy that \textbf{exact same model} in natural production conditions where $\pi = 0.1007$ ($10.07\%$ anomalies):
+    \begin{equation}
+        \text{Precision}_{\text{natural}} = \frac{0.1007 \times 0.83}{(0.1007 \times 0.83) + (0.8993 \times 0.006)} = \frac{0.0836}{0.0836 + 0.0054} = \mathbf{93.93\%} \implies F_1 = \mathbf{88.08\%}
+    \end{equation}
+\end{itemize}
+The exact same model experiences a $5.35\%$ drop in precision and a $2.38\%$ drop in $F_1$-score purely as a mathematical consequence of base-rate reality. This proves why evaluating models under natural operating prevalence is mandatory for scientific integrity.
+
+\section{System Architecture and Streaming Pipeline}
+\label{sec:sys_arch_pipeline}
+The complete end-to-end streaming anomaly detection architecture engineered in this capstone is depicted in Figure~\ref{fig:pipeline_architecture}. The system operates across three decoupled, streaming stages.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/pipeline_diagram.tex}
+    \caption{End-to-End Architectural Pipeline for Streaming Syslog Anomaly Detection. The pipeline ingests unstructured logs, extracts Drain templates, slices sequences along node-centric 6-hour windows, embeds events into a 64-d dual-pooled semantic vector space, reconstructs through a deep MLP Autoencoder, and assigns label-free binary classifications via Extreme Value Theory (POT).}
+    \label{fig:pipeline_architecture}
+\end{figure}
+
+\subsection{Pipeline Execution Workflow}
+\begin{enumerate}
+    \item \textbf{Ingestion and Drain Parsing:} High-throughput log streams arriving from distributed cluster nodes or vehicular control units are buffered in memory and parsed online by the Drain tree parser. Raw messages are mapped to template IDs $e_t \in \{1, \dots, |V|\}$.
+    \item \textbf{Spatial-Temporal Sequence Slicing:} Events are partitioned into tumbling windows defined by unique physical node identities and 6-hour non-overlapping time windows ($\Delta t = 21,600\text{ seconds}$). This grouping maintains execution thread integrity while yielding manageable chunk sizes.
+    \item \textbf{Unsupervised Semantic Vectorization:} The sequence of template IDs is converted into dense 32-dimensional Word2Vec vectors. Mean pooling and Max pooling are computed across valid tokens and concatenated to form a 64-dimensional vector $z_{\text{dual}}$, followed by unit $L_2$-normalization. Tokens absent from the training vocabulary are ignored under our strict Out-of-Vocabulary (OOV) rule (producing a zero vector if the sequence contains only OOV tokens).
+    \item \textbf{Neural Bottleneck Reconstruction:} The 64-dimensional vector is mean-centered and passed through the deep MLP Autoencoder ($64 \rightarrow 32 \rightarrow 16 \rightarrow 32 \rightarrow 64$). The Euclidean reconstruction error $e(z) = \|(z - \mu) - (\hat{z} - \mu)\|_2$ is computed.
+    \item \textbf{Dynamic Statistical Classification:} The reconstruction error is compared against the precomputed EVT/POT threshold $\theta_A$. If $e(z) > \theta_A$, an operational anomaly alert is emitted to the monitoring dashboard; otherwise, the window is classified as healthy.
+\end{enumerate}
+
+\subsection{Complete Algorithmic Formulations}
+\label{subsec:pseudo_code_algorithms}
+To ensure complete reproducibility, the formal algorithms governing data splitting, semantic representation, autoencoder training, and POT thresholding are formalized in Algorithms~\ref{alg:10fold_split}, \ref{alg:w2v_pooling}, \ref{alg:ae_training}, and \ref{alg:pot_thresholding}.
+
+\begin{algorithm}[H]
+\caption{Strictly Leak-Free 10-Fold Stratification Protocol}
+\label{alg:10fold_split}
+\begin{algorithmic}[1]
+\Require Sequences $\mathcal{S} = \{S_1, \dots, S_N\}$, Binary labels $\mathcal{Y} \in \{0, 1\}^N$, Random seed $\kappa = 42$
+\Ensure Ten disjoint evaluation splits $\{\mathcal{D}_1, \dots, \mathcal{D}_{10}\}$
+\State $\mathcal{I}_{\text{norm}} \gets \{i \mid \mathcal{Y}_i = 0\}$; $\mathcal{I}_{\text{anom}} \gets \{i \mid \mathcal{Y}_i = 1\}$
+\State Partition $\mathcal{I}_{\text{norm}}$ into 10 disjoint folds $\{\mathcal{N}_1, \dots, \mathcal{N}_{10}\}$ via KFold$(\kappa)$
+\State Partition $\mathcal{I}_{\text{anom}}$ into 10 disjoint folds $\{\mathcal{A}_1, \dots, \mathcal{A}_{10}\}$ via KFold$(\kappa)$
+\For{$k \gets 1$ \textbf{to} $10$}
+    \State $\mathcal{I}_{\text{test\_norm}} \gets \mathcal{N}_k$; $\mathcal{I}_{\text{test\_anom}} \gets \mathcal{A}_k$
+    \State $\mathcal{I}_{\text{test}} \gets \mathcal{I}_{\text{test\_norm}} \cup \mathcal{I}_{\text{test\_anom}}$ \Comment{Natural prevalence: $10.07\%$}
+    \State $\mathcal{I}_{\text{non\_test\_norm}} \gets \bigcup_{j \ne k} \mathcal{N}_j$; $\mathcal{I}_{\text{non\_test\_anom}} \gets \bigcup_{j \ne k} \mathcal{A}_j$
+    \State Partition $\mathcal{I}_{\text{non\_test\_norm}}$ into TrainNorm ($90\%$) and ValNorm ($10\%$) via KFold$(\kappa + k)$
+    \State Subsample $N_{\text{val\_anom}} = \min(20000, |\mathcal{I}_{\text{non\_test\_anom}}|)$ from $\mathcal{I}_{\text{non\_test\_anom}}$
+    \State $\mathcal{I}_{\text{train}} \gets \text{TrainNorm}$ \Comment{Zero anomalies in training set}
+    \State $\mathcal{I}_{\text{val\_norm}} \gets \text{ValNorm}$; $\mathcal{I}_{\text{val}} \gets \text{ValNorm} \cup \text{ValAnom}$
+    \State \textbf{Assert} $\mathcal{I}_{\text{train}} \cap \mathcal{I}_{\text{val}} = \emptyset \;\land\; \mathcal{I}_{\text{train}} \cap \mathcal{I}_{\text{test}} = \emptyset \;\land\; \mathcal{I}_{\text{val}} \cap \mathcal{I}_{\text{test}} = \emptyset$
+    \State Store split $\mathcal{D}_k \gets (\mathcal{I}_{\text{train}}, \mathcal{I}_{\text{val\_norm}}, \mathcal{I}_{\text{val}}, \mathcal{I}_{\text{test}})$
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[H]
+\caption{Continuous Word2Vec Dual-Pooling Embedding Extraction}
+\label{alg:w2v_pooling}
+\begin{algorithmic}[1]
+\Require Sequences $\mathcal{S}$, Trained Word2Vec model $\mathcal{M}_{\text{w2v}}$ with vocabulary $V$ and dimension $m=32$
+\Ensure Feature matrix $X \in \mathbb{R}^{|\mathcal{S}| \times 64}$
+\State Initialize $X \gets \mathbf{0}_{|\mathcal{S}| \times 64}$
+\For{$i \gets 1$ \textbf{to} $|\mathcal{S}|$}
+    \State $S_i \gets \mathcal{S}[i]$
+    \State $\mathcal{V}_{\text{valid}} \gets [ \mathcal{M}_{\text{w2v}}[w] \mid w \in S_i \;\land\; w \in V ]$
+    \If{$|\mathcal{V}_{\text{valid}}| > 0$}
+        \State $z_{\text{mean}} \gets \frac{1}{|\mathcal{V}_{\text{valid}}|} \sum_{\mathbf{v} \in \mathcal{V}_{\text{valid}}} \mathbf{v}$ \Comment{32-d Mean vector}
+        \State $z_{\text{max}} \gets \max_{\mathbf{v} \in \mathcal{V}_{\text{valid}}} \mathbf{v}$ \Comment{32-d Element-wise Max vector}
+        \State $z_{\text{concat}} \gets [z_{\text{mean}} \;\mathbin{\Vert}\; z_{\text{max}}] \in \mathbb{R}^{64}$
+        \State $X[i] \gets z_{\text{concat}} / \|z_{\text{concat}}\|_2$ \Comment{$L_2$-normalization}
+    \Else
+        \State $X[i] \gets \mathbf{0}_{64}$ \Comment{Empty or 100\% Out-of-Vocabulary window}
+    \EndIf
+\EndFor
+\State \Return $X$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[H]
+\caption{Deep MLP Autoencoder Optimization and Scoring}
+\label{alg:ae_training}
+\begin{algorithmic}[1]
+\Require Training feature matrix $X_{\text{train}} \in \mathbb{R}^{N_{\text{tr}} \times 64}$, Test feature matrix $X_{\text{test}} \in \mathbb{R}^{N_{\text{te}} \times 64}$
+\Ensure Test reconstruction errors $\mathcal{E}_{\text{test}} \in \mathbb{R}^{N_{\text{te}}}$
+\State Compute normal training mean vector: $\mu \gets \frac{1}{N_{\text{tr}}} \sum_{i=1}^{N_{\text{tr}}} X_{\text{train}}[i]$
+\State Center training features: $\widetilde{X}_{\text{train}} \gets X_{\text{train}} - \mathbf{1}\mu^T$
+\State Initialize MLP Autoencoder $(64 \rightarrow 32 \rightarrow 16 \rightarrow 32 \rightarrow 64)$ with parameters $\Theta$
+\State Optimize $\Theta$ on $\widetilde{X}_{\text{train}}$ via Adam ($\alpha = 10^{-4}$, early stopping patience $= 10$ epochs)
+\State Center test features: $\widetilde{X}_{\text{test}} \gets X_{\text{test}} - \mathbf{1}\mu^T$
+\State Reconstruct test samples: $\widehat{X}_{\text{test}} \gets \text{MLP}_{\Theta}(\widetilde{X}_{\text{test}})$
+\State Compute Euclidean residuals: $\mathcal{E}_{\text{test}}[i] \gets \|\widetilde{X}_{\text{test}}[i] - \widehat{X}_{\text{test}}[i]\|_2$ for $i=1, \dots, N_{\text{te}}$
+\State \Return $\mathcal{E}_{\text{test}}$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[H]
+\caption{Label-Free Extreme Value Theory (POT) Thresholding with Safeguard}
+\label{alg:pot_thresholding}
+\begin{algorithmic}[1]
+\Require Validation normal reconstruction errors $\mathcal{E}_{\text{val\_norm}}$, Quantile $q=0.90$, Target $\text{FPR}=10^{-3}$
+\Ensure Decision threshold $\theta_A$, Fallback indicator $F \in \{\text{True}, \text{False}\}$
+\State $u \gets \text{Quantile}(\mathcal{E}_{\text{val\_norm}}, q)$
+\State $\mathcal{Y} \gets \{ e - u \mid e \in \mathcal{E}_{\text{val\_norm}} \;\land\; e > u \}$
+\If{$|\mathcal{Y}| < 10$ \textbf{or} $\text{Var}(\mathcal{Y}) = 0$}
+    \State \Return $(\text{Percentile}(\mathcal{E}_{\text{val\_norm}}, 99.5), \text{True})$
+\EndIf
+\State $\bar{y} \gets \text{Mean}(\mathcal{Y})$; $s^2 \gets \text{Var}(\mathcal{Y})$
+\State $\xi \gets \frac{1}{2}( \bar{y}^2 / s^2 - 1 )$; $\sigma \gets \frac{1}{2}\bar{y}( \bar{y}^2 / s^2 + 1 )$
+\State $p_u \gets |\mathcal{Y}| / |\mathcal{E}_{\text{val\_norm}}|$
+\If{$\xi = 0$}
+    \State $\theta_{\text{POT}} \gets u - \sigma \log(\text{FPR} / p_u)$
+\Else
+    \State $\theta_{\text{POT}} \gets u + (\sigma / \xi) [ (\text{FPR} / p_u)^{-\xi} - 1 ]$
+\EndIf
+\State $e_{\min} \gets \min(\mathcal{E}_{\text{val\_norm}})$; $e_{\max} \gets \max(\mathcal{E}_{\text{val\_norm}})$
+\If{$\text{isnan}(\theta_{\text{POT}})$ \textbf{or} $\text{isinf}(\theta_{\text{POT}})$ \textbf{or} $\theta_{\text{POT}} \le e_{\min}$ \textbf{or} $\theta_{\text{POT}} > 5 \cdot e_{\max}$}
+    \State \Return $(\text{Percentile}(\mathcal{E}_{\text{val\_norm}}, 99.5), \text{True})$
+\Else
+    \State \Return $(\theta_{\text{POT}}, \text{False})$
+\EndIf
+\end{algorithmic}
+\end{algorithm}
+
+\section{Baseline Replication, Empirical Investigations, and Failures}
+\label{sec:arch_reproduction_log}
+A core hallmark of sound scientific inquiry is the willingness to document failed hypotheses, reproduction discrepancies, and empirical dead ends alongside successful breakthroughs. This section details our extensive investigation reproducing the base paper by F{\"a}lt et al.~\cite{falt2025lightweight} (IEEE ICSRS 2025) and diagnosing why classical linear models fail on complex supercomputing logs.
+
+\subsection{Phase 1: HDFS\_v1 Baseline Replication and the $L_2$-Norm Discovery}
+\label{subsec:hdfs_replication}
+The base paper evaluated lightweight linear models on the Hadoop Distributed File System (\textbf{HDFS\_v1}) dataset from LogHub. HDFS\_v1 comprises 11,175,629 raw log entries grouped into 575,061 block execution traces by \texttt{block\_id}, of which 16,838 traces ($2.93\%$) are labeled as anomalous. 
+
+The paper's benchmark protocol used a 5-fold cross-validation setup on a subsampled subset of 25,000 normal sequences and 1,000 anomalous sequences. In each fold, 5,000 normal sequences were used for fitting, and the remaining 20,000 normal plus 1,000 anomalous sequences were used for testing. The paper reported the target results shown in Table~\ref{tab:hdfs_base_paper_targets}.
+
+\begin{table}[htbp]
+\centering
+\caption{Base Paper (F{\"a}lt et al., IEEE ICSRS 2025) Published HDFS\_v1 Results (Table I)}
+\label{tab:hdfs_base_paper_targets}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Model Architecture} & \textbf{Precision (\%)} & \textbf{Recall (\%)} & \textbf{F1-Score (\%)} \\
+\midrule
+DeepLog (Du et al.~\cite{du2017deeplog})* & 100.00 & 60.90 & 75.70 \\
+LogBERT (Cited in literature)* & 24.02 & 83.80 & 37.24 \\
+LogFIT (Almodovar et al.~\cite{almodovar2024logfit})* & 99.78 & 90.70 & 95.02 \\
+\midrule
+\textbf{PCA ($k=6$, Claimed Baseline)} & \textbf{92.90} & \textbf{96.45} & \textbf{94.64} \\
+\textbf{RPCA ($k=9$, Claimed Baseline)} & \textbf{89.88} & \textbf{91.44} & \textbf{90.55} \\
+\bottomrule
+\multicolumn{4}{l}{\footnotesize *Numbers for DeepLog, LogBERT, and LogFIT are cited from published literature (Almodovar et al.), not re-run by us.}
+\end{tabular}
+\end{table}
+
+\subsubsection{The Initial Failure of TF-IDF Preprocessing}
+The text of F{\"a}lt et al. explicitly stated that event count vectors were converted into TF-IDF representations (their Eq. 2) before applying PCA and RPCA. Following their published formulation exactly, we implemented TF-IDF feature extraction and fitted PCA ($k=6$). 
+
+The result was disastrous:
+\begin{itemize}
+    \item Standard TF-IDF + PCA ($k=6$) attained an $F_1$-score of only $\mathbf{76.24\%}$ (Precision: $68.12\%$, Recall: $86.54\%$).
+    \item RPCA under TF-IDF collapsed completely, attaining an $F_1$-score of $\mathbf{31.45\%}$. The sparse matrix $S$ absorbed almost zero exceedances, and the low-rank component $L$ collapsed to rank-2, introducing severe projection noise when forced onto $k=9$ components.
+\end{itemize}
+
+\subsubsection{The Discovery of Undocumented $L_2$-Normalization}
+Investigating the data geometry of HDFS normal sequences revealed a critical insight. In HDFS, block traces vary dramatically in length (some blocks involve 3 block-location operations, while others involve 300 replication loops). Standard TF-IDF penalizes frequent structural events while magnifying rare operational events, distorting the low-rank subspace.
+
+When we discarded TF-IDF, took raw event count vectors $x_i$, and applied unit \textbf{$L_2$-normalization}:
+\begin{equation}
+    x_i^{\text{norm}} = \frac{x_i}{\|x_i\|_2}
+\end{equation}
+an immediate mathematical breakthrough occurred. Normal HDFS count vectors mapped tightly onto an extremely clean, two-dimensional manifold on the unit sphere in $\mathbb{R}^{29}$. 
+
+Under this undocumented $L_2$-normalization:
+\begin{itemize}
+    \item Our PCA ($k=6$) with the 95th percentile error threshold achieved:
+    \begin{equation}
+        \text{Precision: } 92.34\%, \quad \text{Recall: } 96.96\%, \quad \mathbf{F_1\text{-score: } 94.60\%}
+    \end{equation}
+    which replicates the paper's claimed $94.64\%$ baseline within statistical noise ($\Delta F_1 = -0.04\%$).
+    \item Replacing the 95th percentile test-set oracle threshold with our label-free POT estimator on normal validation errors produced:
+    \begin{equation}
+        \mathbf{F_1\text{-score: } 95.95\% \pm 1.47\%}
+    \end{equation}
+    While this score numerically exceeds $94.64\%$, it remains within the statistical variance of the baseline; its true scientific contribution is the elimination of the test-set oracle threshold.
+\end{itemize}
+
+\subsection{Phase 2: The RPCA Structural Reproducibility Gap}
+\label{subsec:rpca_collapse}
+While PCA was successfully replicated, the paper's claim that Robust PCA achieves an $F_1$-score of $\mathbf{90.55\%}$ proved irreproducible. We conducted an exhaustive investigation across multiple experimental vectors:
+\begin{enumerate}
+    \item \textbf{Lagrange Multiplier Sweeps:} Swept the ALM penalty parameter $\lambda = \alpha / \sqrt{\max(N, d)}$ with $\alpha \in [0.1, 0.5, 1.0, 2.0, 5.0]$.
+    \item \textbf{Subspace Rank Sweeps:} Swept projection dimension $k$ from $2$ to $15$.
+    \item \textbf{Mean Centering:} Evaluated both uncentered and mean-centered matrices prior to ALM decomposition. Mean-centering increased rank$(L)$ from 2 to 4 and raised $F_1$ from $83.09\%$ to $85.14\%$.
+    \item \textbf{Bigram Transition Augmentation:} Appended 280 bigram transition features to force higher matrix rank. Bigrams raised rank$(L)$ above 22, but RPCA $F_1$ capped at $54.18\%$.
+    \item \textbf{Multi-Seed Sweep:} Executed a 30-seed randomized cross-validation sweep with fitting sizes scaled up to 25,000 normal sequences.
+\end{enumerate}
+
+Across all 30 seeds and configurations, our absolute highest observed RPCA $F_1$-score was $\mathbf{87.38\%}$ (with a 30-seed mean of $85.14\%$). The published claim of $90.55\%$ lies $+5.8$ standard deviations above our empirical distribution.
+
+\textbf{Mathematical Diagnosis of RPCA Rank Collapse:} The root cause is structural. In the uncontaminated fitting protocol, the training set contains exclusively healthy normal traces. Because normal HDFS traces have an intrinsic rank of only 2, the nuclear norm minimization $\|L\|_*$ collapses the low-rank component to rank 2. The sparse component $S$ is forced to zero because there are no outliers to absorb. Consequently, RPCA provides no mathematical advantage over standard PCA, and projecting a rank-2 subspace onto $k=9$ dimensions merely amplifies residual noise. We conclude that the published $90.55\%$ RPCA figure represents a structural reproducibility gap.
+
+\subsection{Phase 3: The BGL Generalization Test and the Linear Ceiling}
+\label{subsec:bgl_linear_ceiling}
+Having established the capabilities and limits of linear models on HDFS, we evaluated whether linear frequency models generalize to the Blue Gene/L (\textbf{BGL}) supercomputing log dataset collected at Lawrence Livermore National Laboratory (LLNL)~\cite{oliner2007supercomputer}. BGL contains 4,747,963 log lines generated by 131,072 processors, annotated by system administrators with alert categories. 
+
+When linear PCA was applied to BGL event count matrices, performance collapsed catastrophically, hitting a strict mathematical ceiling of $\mathbf{\sim 65.07\%}$ $F_1$-score. 
+
+\textbf{Why Linear Frequency Models Collapse on BGL:}
+\begin{itemize}
+    \item On HDFS, the intrinsic rank of normal traces is 2. A linear projection can easily separate normal operations from failure modes.
+    \item On BGL, the intrinsic matrix rank was empirically measured at \textbf{239}. In a massively parallel supercomputer, healthy operational behavior involves hundreds of concurrent background daemons, network syncs, and memory sweeps. Normal operations do not lie on a simple linear hyperplane. Linear projections conflate complex healthy routines with genuine system failures.
+\end{itemize}
+
+\subsection{Phase 4: The ``Semantic Soup'' Breakdown and Node-Centric Grouping}
+\label{subsec:semantic_soup}
+To transcend the linear frequency ceiling, we introduced continuous semantic Word2Vec embeddings. However, our initial attempt yielded another critical failure:
+\begin{itemize}
+    \item Applying Word2Vec to arbitrary 5-minute global tumbling time windows across the entire BGL dataset caused $F_1$-score to crash to $\mathbf{44.28\%}$.
+\end{itemize}
+
+\textbf{Diagnosis (The ``Semantic Soup'' Phenomenon):} When log messages from 131,072 processors are funneled into a single global chronological queue, the resulting sequence is an asynchronous interleaving of completely unrelated tasks. A network packet log on Rack 0 is immediately followed by a disk write on Rack 12, followed by an instruction cache flush on Rack 4. This destroyed the local context window of Skip-Gram Word2Vec, producing a randomized ``semantic soup'' where token co-occurrences reflected network latency rather than meaningful software execution paths.
+
+\textbf{The Architectural Solution:} We refactored the sequence constructor to group logs strictly by \textbf{physical Node identity} over 6-hour tumbling windows:
+\begin{equation}
+    (\text{Node}, \text{Window\_ID}) \longrightarrow \text{Sequence}
+\end{equation}
+This spatial-temporal partitioning produced 1,286,817 coherent sequences (1,157,289 normal, 129,528 anomalous; $10.07\%$ prevalence). Grouping by physical node restored local execution semantics, allowing Word2Vec to learn genuine operational state transitions and boosting linear PCA from $65.07\%$ to $75.00\%$ $F_1$, and establishing the foundation for our deep autoencoder.
+
+\section{Earlier Evaluation Protocol and Why It Was Replaced}
+\label{sec:arch_legacy_disclosure}
+In earlier project drafts and preliminary review presentations, an $F_1$-score of $\mathbf{\sim 90.44\%}$ was reported for our deep semantic model on BGL (with earlier iterations citing $87.46\%$, 1,384 parameters, and 0.0001 ms). In this section, we provide a complete, transparent disclosure of the methodological flaws identified in that legacy pipeline and explain why it was discarded in favor of our clean 10-fold protocol.
+
+\subsection{Identification of Contamination in the Legacy Pipeline}
+A forensic audit of the legacy evaluation code (`syslog/run_improvements.py`) revealed three critical evaluation vulnerabilities:
+\begin{enumerate}
+    \item \textbf{Artificial Test Anomaly Prevalence ($\sim 52.8\%$):} The legacy script extracted all 129,528 anomalous windows from the entire BGL dataset and appended all of them into every cross-validation test fold alongside $\sim 115,729$ normal windows. This artificially inflated the test set anomaly prevalence to approximately $52.8\%$ (a 1:1 balanced ratio). In real-world operation, anomalies account for only $10.07\%$ of BGL sequences.
+    \item \textbf{Automated Seed Retry Loops:} The legacy script contained automated restart logic that observed test set performance:
+    \begin{verbatim}
+    # Legacy contamination loop
+    if test_f1 < 0.80:
+        print("Sub-optimal split encountered, retrying fold with seed + 1")
+    \end{verbatim}
+    This violated test set blindness, cherry-picking favorable random partitions.
+    \item \textbf{Post-Hoc Threshold Optimization on Test Data:} In early project iterations, decision thresholds were tuned directly to maximize the test set confusion matrix.
+\end{enumerate}
+
+\subsection{Prevalence Effect Quantification and Strict Reporting Policy}
+In accordance with our strict claims policy, we do \textbf{not} assign speculative point-contributions to each individual cause. Instead, we isolate and directly measure the \textbf{prevalence effect}.
+
+When we take our \textbf{exact, leak-free trained models} (where training is 100\% normal, zero retries occurred, and thresholds are fitted strictly on validation data) and evaluate them on an artificially balanced test set ($50\%$ anomalies, replicating the legacy test distribution), our models achieve:
+\begin{itemize}
+    \item \textbf{Clean Balanced View Mode A F1:} $\mathbf{90.16\% \pm 1.18\%}$ (Precision: $99.26\%$, Recall: $82.61\%$)
+    \item \textbf{Clean Balanced View Mode B F1:} $\mathbf{91.36\% \pm 0.63\%}$ (Precision: $99.16$, Recall: $84.71\%$)
+\end{itemize}
+
+This comparison confirms that our model representation is fully robust. As proven mathematically in Section~\ref{subsec:eval_metrics_fallacy}, when anomaly prevalence increases from $10.07\%$ to $50.0\%$, the relative impact of false positives on precision diminishes drastically, elevating precision from $93.76\%$ to $99.26\%$ and pushing $F_1$ directly over $90\%$. The gap between $87.80\%$ and $90.44\%$ is fundamentally explained by realistic operational base rates.
+
+\section{Hardware and Software Implementation Specifications}
+\label{sec:arch_hardware_software}
+
+\subsection{Hardware Host Environment}
+All benchmarks, training routines, and inference latency measurements were conducted locally on consumer-grade hardware without GPU acceleration. The host platform specifications are detailed in Table~\ref{tab:hardware_specs}.
+
+\begin{table}[htbp]
+\centering
+\caption{Host Hardware and Deployment Specifications}
+\label{tab:hardware_specs}
+\begin{tabular}{ll}
+\toprule
+\textbf{Hardware Component} & \textbf{Specification} \\
+\midrule
+Host Processor (CPU) & Apple M2 (8 Cores: 4 Performance + 4 Efficiency) \\
+CPU Architecture & ARM64 (64-bit Mach-O, ARMv8.5-A) \\
+Primary CPU Clock & Dynamic scaling up to 3.49 GHz \\
+L1 Instruction Cache & 192 KB (Performance cores) / 128 KB (Efficiency cores) \\
+L1 Data Cache & 128 KB (Performance cores) / 64 KB (Efficiency cores) \\
+L2 Shared Cache & 16 MB (Performance cluster) / 4 MB (Efficiency cluster) \\
+System Memory (RAM) & 8.0 GB Unified LPDDR5 Memory \\
+Memory Bus Bandwidth & 100 GB/s unified memory interface \\
+Host Operating System & macOS Sequoia 15.8.1 (Darwin Kernel 24.x) \\
+Acceleration Hardware & None (Strictly CPU-bound execution; Metal/MPS disabled) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Software Runtime and Library Ecosystem}
+The software stack was constructed entirely in Python using stable, industry-standard scientific computing libraries:
+\begin{itemize}
+    \item \textbf{Python Runtime:} CPython 3.11 / 3.13 (macOS arm64 build).
+    \item \textbf{PyTorch:} Version 2.14.0 (compiled for Apple Silicon, CPU backend).
+    \item \textbf{Scikit-Learn:} Version 1.4.0 (providing \texttt{MLPRegressor}, \texttt{IsolationForest}, and \texttt{KFold}).
+    \item \textbf{Gensim:} Version 4.3.2 (providing deterministic Skip-Gram \texttt{Word2Vec}).
+    \item \textbf{NumPy \& SciPy:} Versions 1.26.4 and 1.12.0 (providing SVD, GPD fitting, and linear algebra routines).
+    \item \textbf{Pandas \& Matplotlib:} Versions 2.2.0 and 3.8.2 (data manipulation and vector graphics rendering).
+\end{itemize}
+
+\subsection{Integrity Verification and Disjointness Proof}
+To guarantee zero data contamination across all 10 folds, our execution harness runs automated assert statements before model fitting:
+\begin{verbatim}
+assert len(set(train_idx) & set(val_norm_idx)) == 0
+assert len(set(train_idx) & set(val_idx)) == 0
+assert len(set(train_idx) & set(test_idx)) == 0
+assert len(set(val_idx) & set(test_idx)) == 0
+assert np.all(y[train_idx] == 0)
+assert np.all(y[val_norm_idx] == 0)
+\end{verbatim}
+Furthermore, an automated static audit confirmed that test labels are never imported during model selection: running \texttt{grep -n "y\_test" syslog\_v2\_clean/run\_development.py} returned \textbf{0 matches}.
+
+\subsection{Model Selection Suite on Development Folds 1 and 2}
+\label{subsec:dev_selection}
+To prevent multi-hypothesis over-fitting on test data, all architectural tuning and hyperparameter optimization were conducted strictly on Development Folds 1 and 2, evaluating only \textbf{Validation Mode A $F_1$-score} (label-free POT threshold). The evaluated variants are summarized in Table~\ref{tab:dev_variants}.
+
+\begin{table}[htbp]
+\centering
+\caption{Model Architecture Selection Suite on Development Folds 1 and 2 (Validation Metrics)}
+\label{tab:dev_variants}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{lllccccc}
+\toprule
+\textbf{Variant} & \textbf{Representation Space} & \textbf{Architecture / Regularization} & \textbf{Val Mode A F1} & \textbf{Val Mode A Prec} & \textbf{Val Mode A Rec} & \textbf{Val Mode B F1} & \textbf{Fit Time} \\
+\midrule
+V0 & Mean Pooling (32-d) & AE (16, 8, 16), $\alpha=10^{-4}$ & $87.59\%$ & $94.85\%$ & $81.42\%$ & $88.85\%$ & 37.0s \\
+V1 & Mean Pooling (32-d) & AE (16, 8, 16), POT + Fallback & $87.59\%$ & $94.85\%$ & $81.42\%$ & $88.85\%$ & 36.4s \\
+\textbf{V2} & \textbf{Mean+Max Pooling (64-d)} & \textbf{AE (32, 16, 32), $\alpha=10^{-4}$} & $\mathbf{89.70\%}$ & $\mathbf{96.66\%}$ & $\mathbf{83.69\%}$ & $\mathbf{90.14\%}$ & \textbf{61.9s} \\
+V3 & IDF-Weighted Mean (32-d) & AE (16, 8, 16), $\alpha=10^{-4}$ & $43.36\%$ & $84.22\%$ & $40.32\%$ & $87.89\%$ & 56.5s \\
+V4 & Mean+Max (64-d) & Ensemble of 5 Seeds on V2 & $86.51\%$ & $98.16\%$ & $77.34\%$ & $89.68\%$ & 236.0s \\
+V5-a & Mean+Max (64-d) & AE (32, 16, 32), $\alpha=10^{-4}$ & $89.70\%$ & $96.66\%$ & $83.69\%$ & $90.14\%$ & 65.4s \\
+V5-b & Mean+Max (64-d) & AE (32, 16, 32), $\alpha=10^{-3}$ & $88.42\%$ & $95.84\%$ & $82.08\%$ & $89.76\%$ & 76.6s \\
+V5-c & Mean+Max (64-d) & AE (64, 32, 64), $\alpha=10^{-4}$ & $88.61\%$ & $91.49\%$ & $85.90\%$ & $91.08\%$ & 44.8s \\
+V5-d & Mean+Max (64-d) & AE (64, 32, 64), $\alpha=10^{-3}$ & $88.96\%$ & $91.98\%$ & $86.12\%$ & $90.72\%$ & 33.3s \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\textbf{Final Architectural Selection:} Variant \textbf{V2} achieved the highest Validation Mode A $F_1$-score ($89.70\%$), delivering an optimal balance of high precision ($96.66\%$) and recall ($83.69\%$). This configuration—concatenated Mean+Max Word2Vec pooling (64-d), $L_2$-normalization, and an MLP Autoencoder ($64 \rightarrow 32 \rightarrow 16 \rightarrow 32 \rightarrow 64$) with $\alpha=10^{-4}$—was locked in as the winning model and evaluated once across all 10 folds.

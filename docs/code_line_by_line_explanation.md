@@ -279,7 +279,6 @@ It is a common misconception that AI projects are just a few lines of code. The 
 *   **`src/our_contributions/models/thresholding.py`**: The Extreme Value Theory (POT) dynamic thresholds.
 *   **`src/our_contributions/run_improvements.py`**: Orchestrates testing our new pipeline.
 *   **`src/our_contributions/run_improvements_leak_fixed.py`**: Prevents data-leakage during validation.
-*   **`src/our_contributions/run_lstm_autoencoder.py`**: Experimental script for LSTM sequences.
 *   **`src/our_contributions/benchmark.py`**: Final battle script pitting the linear models vs our deep learning models.
 
 ### Group C: The Archive (The Trial & Error Journey)

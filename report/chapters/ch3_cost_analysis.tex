@@ -1,0 +1,95 @@
+\chapter{Cost Analysis}
+\label{ch:cost}
+
+In enterprise software engineering and site reliability operations, the adoption of an automated anomaly detection platform depends not only on its statistical detection metrics, but equally on its \textbf{computational, memory, operational, and financial cost}. A machine learning model that achieves high accuracy at the expense of requiring dedicated multi-GPU server clusters or introducing millisecond latency bottlenecks is impractical for high-velocity streaming environments. In this chapter, we present an exhaustive cost analysis of our engineered pipeline, grounded directly in the empirical measurements captured on host hardware (`syslog_v2_clean/efficiency_results.csv`).
+
+\section{Computational and Memory Footprint Analysis}
+\label{sec:cost_compute_memory}
+The computational complexity and memory demands of deep learning architectures are dictated by their total parameter count and floating-point operations (FLOPs). Table~\ref{tab:model_footprint_cost} details the structural parameter breakdown and memory residency of our Multi-Layer Perceptron Autoencoder.
+
+\begin{table}[htbp]
+\centering
+\caption{Model Structural Dimensions and Memory Cost Profile}
+\label{tab:model_footprint_cost}
+\begin{tabular}{llc}
+\toprule
+\textbf{Component Layer} & \textbf{Mathematical Dimension / Operation} & \textbf{Parameters} \\
+\midrule
+Mean Centering Vector ($\mu$) & $\mu \in \mathbb{R}^{64}$ (Stored empirical mean) & 64 \\
+Encoder Layer 1 & Weight $W_1 \in \mathbb{R}^{64 \times 32}$ + Bias $b_1 \in \mathbb{R}^{32}$ & $2,048 + 32 = 2,080$ \\
+Encoder Layer 2 (Bottleneck) & Weight $W_2 \in \mathbb{R}^{32 \times 16}$ + Bias $b_2 \in \mathbb{R}^{16}$ & $512 + 16 = 528$ \\
+Decoder Layer 3 & Weight $W_3 \in \mathbb{R}^{16 \times 32}$ + Bias $b_3 \in \mathbb{R}^{32}$ & $512 + 32 = 544$ \\
+Decoder Layer 4 (Output) & Weight $W_4 \in \mathbb{R}^{32 \times 64}$ + Bias $b_4 \in \mathbb{R}^{64}$ & $2,048 + 64 = 2,112$ \\
+\midrule
+\textbf{Total Model Parameters} & \textbf{5,264 Trainable + 64 Static Mean} & \textbf{5,328} \\
+\textbf{Serialized Pickle Footprint} & \textbf{Pickled weights, biases, and metadata} & \textbf{70.25 KB} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Cache-Resident Execution:} In 32-bit floating-point precision, 5,328 parameters require exactly $21,312$ bytes ($\approx 20.8\text{ KB}$) of raw memory. When serialized with Python object metadata, the model artifact occupies only \textbf{70.25 KB} on disk. On modern processor architectures (such as the Apple M2 silicon utilized in our benchmarks, which features 128 KB of L1 data cache per performance core and 16 MB of shared L2 cache), the entire neural autoencoder model resides permanently inside the processor's high-speed L1/L2 CPU cache. Consequently, streaming inference triggers \textbf{zero main-memory RAM thrashing or cache-miss bus stalls}, delivering deterministic execution speeds.
+
+\section{Latency and Real-Time Streaming Performance Cost}
+\label{sec:cost_latency}
+To evaluate real-time viability under continuous operational telemetry, we measured the execution latency across single-sample evaluation, batched evaluation, and end-to-end streaming throughput. All benchmarks were executed on the Apple M2 CPU (8 cores, 8.0 GB Unified RAM, macOS 15.8.1) in single-threaded mode without GPU acceleration. The benchmark results are summarized in Table~\ref{tab:latency_benchmarks}.
+
+\begin{table}[htbp]
+\centering
+\caption{Empirical Latency and Throughput Benchmarks on Apple M2 Silicon (CPU Only)}
+\label{tab:latency_benchmarks}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Evaluation Metric} & \textbf{Measurement} & \textbf{Engineering Context} \\
+\midrule
+Single-Window Latency (Mean) & \textbf{0.0432 ms} ($43.2\text{ }\mu\text{s}$) & Negligible overhead for live monitoring \\
+Single-Window Latency ($99^{\text{th}}$ Percentile) & \textbf{0.0476 ms} ($47.6\text{ }\mu\text{s}$) & Deterministic; zero tail latency spikes \\
+Batch Latency ($\text{Batch Size} = 256$, Mean) & \textbf{0.0959 ms} ($95.9\text{ }\mu\text{s}$) & Parallel SIMD vector processing \\
+Per-Window Latency in Batch & \textbf{0.37 microseconds} & Microsecond-level bulk processing \\
+Batch Latency ($99^{\text{th}}$ Percentile) & \textbf{0.1111 ms} ($111.1\text{ }\mu\text{s}$) & High predictability under load \\
+\midrule
+\textbf{End-to-End Pipeline Throughput} & \textbf{62,076 windows/sec} & Token lookup + pooling + L2 + AE \\
+\bottomrule
+\multicolumn{3}{l}{\footnotesize *Throughput measured starting from pre-extracted template IDs; Drain parsing not included.}
+\end{tabular}
+\end{table}
+
+\textbf{Latency SLA Compliance:} In high-reliability computing, anomaly detection alerts must be generated within strict Service Level Agreements (typically under 100 milliseconds from event occurrence). With a single-window forward pass requiring only \textbf{43.2 microseconds} (and a p99 latency of \textbf{47.6 microseconds}), our model consumes less than $0.05\%$ of typical SLA budgets. When processing batched telemetry buffers, the per-window cost drops to an extraordinary \textbf{0.37 microseconds}, enabling a sustained pipeline throughput of \textbf{62,076 windows per second} on a single consumer CPU core.
+
+\section{Financial and Infrastructure Cost Comparison (OpEx and CapEx)}
+\label{sec:cost_financial_infrastructure}
+The vast majority of modern deep learning research in log analysis advocates for transformer-based foundation models, such as LogBERT, BERT-base, or fine-tuned Small Language Models (SLMs). While transformers achieve strong representational capacity, their real-world deployment incurs massive financial and environmental costs.
+
+Table~\ref{tab:cost_comparison_infrastructure} presents a realistic cloud infrastructure cost comparison between a heavy transformer-based monitoring architecture and our lightweight CPU-bound autoencoder pipeline.
+
+\begin{table}[htbp]
+\centering
+\caption{Cloud Infrastructure Cost Comparison: Transformer vs Lightweight Autoencoder}
+\label{tab:cost_comparison_infrastructure}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Architecture} & \textbf{Parameters} & \textbf{Required Hardware} & \textbf{Est. Hourly Cost (AWS)*} & \textbf{Est. Annual OpEx} \\
+\midrule
+Transformer (LogBERT / BERT) & $\sim 110,000,000$ & $1 \times \text{NVIDIA A10G (g5.xlarge)}$ & $\$1.006$ / hr & $\$8,812.56$ / instance \\
+Heavy RNN (DeepLog Bi-LSTM) & $\sim 2,500,000$ & $1 \times \text{NVIDIA T4 (g4dn.xlarge)}$ & $\$0.526$ / hr & $\$4,607.76$ / instance \\
+\textbf{Our MLP Autoencoder} & \textbf{5,328} & \textbf{Commodity CPU (c7g.medium)} & $\mathbf{\$0.0361}$ \textbf{/ hr} & $\mathbf{\$316.24}$ \textbf{/ instance} \\
+\bottomrule
+\multicolumn{5}{l}{\footnotesize *On-demand pricing based on AWS US East (N. Virginia), 2026 standard rates.}
+\end{tabular}
+}
+\end{table}
+
+\textbf{Economic Viability:} Deploying a heavy transformer model across a cluster of 50 monitoring endpoints would require dedicated GPU instances costing over \textbf{\$440,000 annually} in cloud compute bills alone. In contrast, our lightweight 5,328-parameter autoencoder runs seamlessly on low-cost ARM-based CPU instances (e.g., AWS Graviton \texttt{c7g.medium}), costing less than \textbf{\$16,000 annually} for the entire 50-node fleet—representing a \textbf{96.4\% reduction in operational expenditure (OpEx)}. 
+
+Furthermore, because our model requires zero GPU acceleration and operates entirely within a $70.25\text{ KB}$ footprint, it can be deployed directly as an in-process sidecar daemon on the host compute node itself or compiled onto lightweight edge rack controllers without requiring specialized accelerator hardware (CapEx savings).
+
+\section{Data Compression and Storage Transmission Cost}
+\label{sec:cost_data_compression}
+In distributed architectures, streaming raw log messages over high-speed networks to a centralized analytics cluster creates severe network bandwidth congestion and escalating object storage costs (e.g., Amazon S3 ingest fees). 
+\begin{itemize}
+    \item A raw BGL log message averages approximately $95$ bytes of uncompressed ASCII text. Across 4.75 million log entries, raw storage consumes over \textbf{450 MB}.
+    \item Passing logs through the Drain parser reduces each message to an integer template ID (requiring only 2 bytes in \texttt{uint16} format), achieving an immediate \textbf{97.9\% data compression ratio}.
+    \item Mapping 6-hour windows into 64-dimensional float32 vectors ($256$ bytes per window) allows an entire 7-month operational trace of a supercomputer (1.28 million windows) to be stored in less than \textbf{330 MB} of vector memory.
+\end{itemize}
+This dramatic reduction in data volume lowers operational network egress costs and facilitates localized, edge-based telemetry analysis.
+

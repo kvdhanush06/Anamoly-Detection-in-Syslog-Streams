@@ -1,0 +1,93 @@
+\begin{tikzpicture}[
+    node distance=1.2cm and 1.0cm,
+    box/.style={
+        draw=black!70,
+        fill=blue!5,
+        rounded corners=4pt,
+        align=center,
+        font=\small\sffamily,
+        inner sep=6pt,
+        line width=0.8pt
+    },
+    proc/.style={
+        draw=black!70,
+        fill=orange!10,
+        rounded corners=4pt,
+        align=center,
+        font=\small\sffamily,
+        inner sep=6pt,
+        line width=0.8pt
+    },
+    model/.style={
+        draw=black!70,
+        fill=teal!10,
+        rounded corners=4pt,
+        align=center,
+        font=\small\sffamily,
+        inner sep=6pt,
+        line width=0.8pt
+    },
+    decision/.style={
+        draw=black!70,
+        fill=purple!10,
+        rounded corners=4pt,
+        align=center,
+        font=\small\sffamily,
+        inner sep=6pt,
+        line width=0.8pt
+    },
+    arrow/.style={
+        ->,
+        >=Stealth,
+        line width=1.0pt,
+        draw=black!80
+    },
+    groupbox/.style={
+        draw=black!40,
+        dashed,
+        rounded corners=6pt,
+        inner sep=10pt,
+        line width=0.8pt
+    }
+]
+
+% Top Row: Ingestion & Preprocessing
+\node[box] (raw) {\textbf{Raw Syslog Stream}\\Distributed Nodes\\(\textit{LLNL BGL / HDFS})};
+
+\node[proc, right=1.0cm of raw] (drain) {\textbf{Drain Log Parser}\\Prefix Tree Clustering\\Template ID Extraction};
+
+\node[proc, right=1.0cm of drain] (window) {\textbf{Spatial-Temporal Slicing}\\Node-Centric Partitioning\\$\Delta t = 6\text{h Non-Overlapping}$};
+
+% Middle Row: Embeddings & Neural Reconstruction
+\node[model, below=1.4cm of window] (pooling) {\textbf{Dual-Pooling Representation}\\Mean Pool (32-d) + Max Pool (32-d)\\Concatenated $z \in \mathbb{R}^{64}$, $L_2$-Normalized};
+
+\node[model, left=1.0cm of pooling] (w2v) {\textbf{Skip-Gram Word2Vec}\\Trained on Normal Sequences\\Vocabulary $V$, Dimension $d=32$};
+
+\node[model, left=1.0cm of w2v] (ae) {\textbf{MLP Autoencoder}\\Architecture: $64 \rightarrow 32 \rightarrow 16 \rightarrow 32 \rightarrow 64$\\Bottleneck Latent Space ($h \in \mathbb{R}^{16}$)};
+
+% Bottom Row: Scoring, EVT, & Alerting
+\node[proc, below=1.4cm of ae] (error) {\textbf{Reconstruction Error}\\$e(z) = \|z - \hat{z}\|_2$\\Euclidean Residual Distance};
+
+\node[decision, right=1.0cm of error] (pot) {\textbf{EVT / POT Thresholding}\\Fit GPD on Normal Val Tails ($q=0.90$)\\Label-Free Cutoff $\theta_A$ (Fallback: $99.5\%$ pct)};
+
+\node[decision, right=1.0cm of pot] (alert) {\textbf{Operational Decision}\\If $e(z) > \theta_A \implies \text{\textbf{Anomaly}}$\\If $e(z) \le \theta_A \implies \text{\textbf{Normal}}$};
+
+% Arrows
+\draw[arrow] (raw) -- (drain);
+\draw[arrow] (drain) -- (window);
+\draw[arrow] (window) -- (pooling);
+\draw[arrow] (pooling) -- (w2v);
+\draw[arrow] (w2v) -- (ae);
+\draw[arrow] (ae) -- (error);
+\draw[arrow] (error) -- (pot);
+\draw[arrow] (pot) -- (alert);
+
+% Group Background Labels
+\begin{scope}[on background layer]
+    \node[groupbox, fill=blue!2, fit=(raw)(drain)(window), label=above:{\small\textbf{Stage 1: Streaming Ingestion \& Structured Slicing}}] {};
+    \node[groupbox, fill=green!2, fit=(w2v)(pooling)(ae), label=above:{\small\textbf{Stage 2: Semantic Representation \& Deep Compression}}] {};
+    \node[groupbox, fill=orange!2, fit=(error)(pot)(alert), label=below:{\small\textbf{Stage 3: Residual Error Quantification \& Statistical POT Decision}}] {};
+\end{scope}
+
+\end{tikzpicture}
+

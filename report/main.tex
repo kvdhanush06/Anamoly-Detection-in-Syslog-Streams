@@ -1,0 +1,181 @@
+\documentclass[12pt,a4paper]{report}
+
+% Page Layout and Geometry
+\usepackage[a4paper, top=1in, bottom=1in, left=1.2in, right=1in]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+
+% Typography and Encodings
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{times}
+\usepackage{microtype}
+
+% Mathematical Formatting
+\usepackage{amsmath, amssymb, amsfonts, amsthm}
+
+% Tables and Visuals
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{makecell}
+\usepackage{tabularx}
+\usepackage{graphicx}
+\usepackage{float}
+\graphicspath{{figures/}}
+
+% TikZ and Diagramming
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, calc, fit, backgrounds}
+
+% Algorithms and Pseudo-code
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+% Code Listings
+\usepackage{listings}
+\usepackage{xcolor}
+
+\definecolor{codegreen}{rgb}{0,0.55,0.2}
+\definecolor{codegray}{rgb}{0.45,0.45,0.45}
+\definecolor{codepurple}{rgb}{0.55,0,0.75}
+\definecolor{backcolour}{rgb}{0.97,0.97,0.98}
+\definecolor{keywordblue}{rgb}{0.1,0.2,0.7}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen}\itshape,
+    keywordstyle=\color{keywordblue}\bfseries,
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,         
+    breaklines=true,                 
+    captionpos=b,                    
+    keepspaces=true,                 
+    numbers=left,                    
+    numbersep=6pt,                  
+    showspaces=false,                
+    showstringspaces=false,
+    showtabs=false,                  
+    tabsize=4,
+    frame=single,
+    rulecolor=\color{black!20},
+    xleftmargin=10pt,
+    xrightmargin=5pt
+}
+\lstset{style=mystyle}
+
+% Section Heading Formatting (16, 14, 12 Rule)
+\usepackage{titlesec}
+\titleformat{\chapter}[display]
+  {\normalfont\fontsize{18}{22}\bfseries}{\chaptertitlename\ \thechapter}{14pt}{\fontsize{18}{22}\bfseries}
+\titleformat{\section}
+  {\normalfont\fontsize{15}{18}\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}
+  {\normalfont\fontsize{13}{16}\bfseries}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}
+  {\normalfont\fontsize{12}{15}\bfseries}{\thesubsubsection}{1em}{}
+
+% Hyperlinks
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!75!black,
+    citecolor=green!50!black,
+    urlcolor=purple!70!black,
+    pdfauthor={Venkata Dhanush K., Veera Nidhish G., Settipalli Raja Rushi Praneeth R., Evvala Venkata Lakshmi Narasimha V.},
+    pdftitle={Deep Semantic Sequence Modeling and Lightweight Optimization for Robust Syslog Anomaly Detection},
+    pdfsubject={Final Year Capstone Project Report},
+    pdfkeywords={Log Anomaly Detection, Syslog, Autoencoder, Word2Vec, Extreme Value Theory, Peaks-Over-Threshold}
+}
+
+\begin{document}
+
+% -------------------------------------------------------------
+% FRONT MATTER
+% -------------------------------------------------------------
+\pagenumbering{roman}
+
+% Title Page
+\input{frontmatter/titlepage.tex}
+\cleardoublepage
+
+% Certificate Placeholder
+\input{frontmatter/certificate.tex}
+\cleardoublepage
+
+% Declaration Placeholder
+\input{frontmatter/declaration.tex}
+\cleardoublepage
+
+% Acknowledgements
+\input{frontmatter/acknowledgements.tex}
+\cleardoublepage
+
+% Abstract
+\input{frontmatter/abstract.tex}
+\cleardoublepage
+
+% Table of Contents
+\tableofcontents
+\cleardoublepage
+
+% List of Figures
+\listoffigures
+\addcontentsline{toc}{chapter}{List of Figures}
+\cleardoublepage
+
+% List of Tables
+\listoftables
+\addcontentsline{toc}{chapter}{List of Tables}
+\cleardoublepage
+
+% List of Abbreviations
+\input{frontmatter/abbreviations.tex}
+\cleardoublepage
+
+% -------------------------------------------------------------
+% MAIN BODY CHAPTERS
+% -------------------------------------------------------------
+\pagenumbering{arabic}
+\setcounter{page}{1}
+
+% Chapter 1: Introduction
+\input{chapters/ch1_introduction.tex}
+\cleardoublepage
+
+% Chapter 2: System Architecture and Methodology (Hardware & Software Details)
+\input{chapters/ch2_system_architecture.tex}
+\cleardoublepage
+
+% Chapter 3: Cost Analysis
+\input{chapters/ch3_cost_analysis.tex}
+\cleardoublepage
+
+% Chapter 4: Results and Discussion
+\input{chapters/ch4_results_discussion.tex}
+\cleardoublepage
+
+% Chapter 5: Conclusion & Future Works
+\input{chapters/ch5_conclusion.tex}
+\cleardoublepage
+
+% Chapter 6: Appendix (Source Code)
+\input{chapters/ch6_appendix.tex}
+\cleardoublepage
+
+% Chapter 7: References
+\chapter{References}
+\label{ch:refs}
+\begingroup
+\renewcommand{\chapter}[2]{}
+\bibliographystyle{plain}
+\bibliography{references}
+\endgroup
+\cleardoublepage
+
+% Biodata & End Note
+\input{biodata.tex}
+
+\end{document}
+

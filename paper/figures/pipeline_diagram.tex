@@ -1,0 +1,72 @@
+\begin{tikzpicture}[
+    node distance=0.8cm and 0.5cm,
+    font=\footnotesize\sffamily,
+    box/.style={draw=black!80, fill=blue!8, rounded corners=3pt, align=center, inner sep=4pt, line width=0.6pt},
+    hdfsbox/.style={draw=blue!80!black, fill=blue!12, rounded corners=3pt, align=center, inner sep=4pt, line width=0.6pt},
+    bglbox/.style={draw=teal!80!black, fill=teal!12, rounded corners=3pt, align=center, inner sep=4pt, line width=0.6pt},
+    reconbox/.style={draw=orange!80!black, fill=orange!15, rounded corners=3pt, align=center, inner sep=4pt, line width=0.6pt},
+    potbox/.style={draw=purple!80!black, fill=purple!12, rounded corners=3pt, align=center, inner sep=4pt, line width=0.6pt},
+    arrow/.style={->, >=stealth, line width=0.8pt, draw=black!75},
+    darrow/.style={->, >=stealth, dashed, line width=0.7pt, draw=black!60}
+]
+
+% Step 1: Ingestion and Parsing
+\node[box] (raw) {\textbf{Raw Syslog Stream}\\Distributed telemetry};
+\node[box, right=0.6cm of raw] (drain) {\textbf{Drain Parser}\\Template prefix tree};
+
+% Step 2: Branching Grouping & Representations
+\node[hdfsbox, above right=0.2cm and 0.7cm of drain] (hdfs_pipe) {
+    \textbf{HDFS Session Stream}\\
+    Group by \texttt{block\_id}\\
+    Count Vector ($d=29$, $L_2$-norm)
+};
+
+\node[bglbox, below right=0.2cm and 0.7cm of drain] (bgl_pipe) {
+    \textbf{BGL Interleaved Stream}\\
+    Node + 6h Window\\
+    Word2Vec (32-d) + Mean/Max (64-d)
+};
+
+% Step 3: Reconstruction Models
+\node[reconbox, right=0.7cm of hdfs_pipe] (hdfs_pca) {
+    \textbf{Linear PCA ($k=6$)}\\
+    Normal subspace fit\\
+    203 params, $\sim$1.2 KB
+};
+
+\node[reconbox, right=0.7cm of bgl_pipe] (bgl_ae) {
+    \textbf{MLP Autoencoder}\\
+    $64 \to 32 \to 16 \to 32 \to 64$\\
+    5,328 params, 70.2 KB
+};
+
+% Step 4: Residual Error
+\node[box, right=0.8cm of $(hdfs_pca)!0.5!(bgl_ae)$] (recon_err) {
+    \textbf{Reconstruction Error}\\
+    $e(x) = \|x - \hat{x}\|_2$\\
+    L2 Residual Distance
+};
+
+% Step 5: EVT / POT Decision
+\node[potbox, right=0.7cm of recon_err] (pot_decision) {
+    \textbf{EVT / POT Decision}\\
+    Tail cutoff $q=0.90$ on val normals\\
+    Target $\text{FPR} = 10^{-3}$ ($\theta_A$)\\
+    \textbf{Anomaly if $e(x) > \theta_A$}
+};
+
+% Connecting Arrows
+\draw[arrow] (raw) -- (drain);
+\draw[arrow] (drain.east) -- ++(0.3,0) |- (hdfs_pipe.west);
+\draw[arrow] (drain.east) -- ++(0.3,0) |- (bgl_pipe.west);
+
+\draw[arrow] (hdfs_pipe) -- (hdfs_pca);
+\draw[arrow] (bgl_pipe) -- (bgl_ae);
+
+\draw[arrow] (hdfs_pca.east) -| (recon_err.north);
+\draw[arrow] (bgl_ae.east) -| (recon_err.south);
+
+\draw[arrow] (recon_err) -- (pot_decision);
+
+\end{tikzpicture}
+

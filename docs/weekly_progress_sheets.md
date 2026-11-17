@@ -1,163 +1,107 @@
-# Capstone Project Diary - Weekly Progress Sheets
+# Weekly Progress Sheets
 
-**Project Title:** Anomaly Detection in Syslog Streams: Implementing Lightweight Deep Semantic Architecture
-**Guide:** Dr. Mohinder Singh B (SCOPE)
-**Team Members (Reg. No. - Name):**
-- 23BCE8172 - Venkata Dhanush Kakarlamudi
-- 23BCE7421 - Veera Nidhish Gondimalla
-- 23BCE7425 - Settipalli Raja Rushi Praneeth Reddy
-- 23BCE7439 - Evvala Venkata Lakshmi Narasimha Veereswar
+## Week 0 (July 28 - August 3)
+**Tasks Completed:**
+* Brainstormed potential capstone projects, identified log anomaly detection as a critical problem, and finalized the topic. 
+* Outlined the initial tasks, objectives, and overall architecture for the project.
+
+**Tasks Planned for next week:**
+* Study base research papers and analyze existing log anomaly detection methods.
+* Prepare initial structured datasets for baseline testing.
 
 ---
 
-## Week 1
-**Period From:** 10/08/2026 **To:** 16/08/2026
-**Date of Meeting:** 10/08/2026
-**Members attended (Reg. No.):** 23BCE8172, 23BCE7421, 23BCE7425, 23BCE7439
-
+## Week 1 (August 4 - August 10)
 **Tasks Completed:**
-- Conducted literature survey on system log anomaly detection models.
-- Analyzed the base paper "Lightweight Optimization based Log-file Anomaly Detection" (Fält et al., 2025).
-- Formulated the problem statement focusing on the limitations of count-based linear architectures.
-- Set up the initial project repository and downloaded the HDFS_v1 dataset.
+* Studied the base research paper and analyzed existing log anomaly detection methods.
+* Downloaded and prepared the structured HDFS dataset for initial testing.
 
-**Tasks Planned Next Week:**
-- Parse and preprocess the HDFS_v1 dataset.
-- Implement the baseline PCA and RPCA models with TF-IDF features.
-- Evaluate the baseline models using the 95th-percentile error threshold.
-
-**Comments/Suggestion by the Guide:** 
-<br><br><br>
-**Signature of the Guide:** 
+**Tasks Planned for next week:**
+* Write the code for the lightweight baseline models (PCA and RPCA).
+* Run the PCA model on the HDFS dataset.
 
 ---
 
-## Week 2
-**Period From:** 17/08/2026 **To:** 23/08/2026
-**Date of Meeting:** 17/08/2026
-**Members attended (Reg. No.):** 23BCE8172, 23BCE7421, 23BCE7425, 23BCE7439
-
+## Week 2 (August 11 - August 17)
 **Tasks Completed:**
-- Preprocessed the HDFS_v1 dataset into discrete event count matrices.
-- Implemented standard PCA and RPCA baseline algorithms.
-- Encountered rank-collapse issues with RPCA and sub-optimal performance with PCA (~76% F1).
-- Began investigating the mathematical data geometry to resolve the discrepancy with the base paper.
+* Wrote the code for PCA and RPCA baseline models. 
+* Successfully ran the PCA model on the HDFS dataset and matched the paper's high accuracy.
 
-**Tasks Planned Next Week:**
-- Debug the baseline implementation by applying L2-normalization.
-- Parse the complex, interleaved BGL supercomputer dataset for generalization testing.
-- Evaluate the baseline linear models on the BGL dataset.
-
-**Comments/Suggestion by the Guide:** 
-<br><br><br>
-**Signature of the Guide:** 
+**Tasks Planned for next week:**
+* Test the RPCA model and evaluate its performance limitations.
+* Acquire the BGL supercomputer dataset, which is much more complex and unstructured.
 
 ---
 
-## Week 3
-**Period From:** 24/08/2026 **To:** 30/08/2026
-**Date of Meeting:** 24/08/2026
-**Members attended (Reg. No.):** 23BCE8172, 23BCE7421, 23BCE7425, 23BCE7439
-
+## Week 3 (August 18 - August 24)
 **Tasks Completed:**
-- Successfully matched the base paper’s PCA result (~94.65% F1) on HDFS by introducing L2-normalized raw counts.
-- Parsed 4.7 million real-world logs from the BGL dataset using automated sequence extraction.
-- Evaluated the linear baseline models on the BGL dataset.
-- Discovered that traditional linear models collapse on complex, high-rank interleaved logs (F1 ~65%).
+* Tested the RPCA model and noted its performance limitations compared to PCA.
+* Acquired the BGL supercomputer dataset and set up the initial pipeline for it.
 
-**Tasks Planned Next Week:**
-- Document the limitations of count-based frequency matrices.
-- Finalize the Review 1 presentation and report.
-- Deliver the Capstone Review 1 presentation outlining the proposed architectural pivot.
-
-**Comments/Suggestion by the Guide:** 
-<br><br><br>
-**Signature of the Guide:** 
+**Tasks Planned for next week:**
+* Test the baseline models on this new BGL data to evaluate their robustness on complex data.
+* Analyze why models might fail on unstructured logs.
 
 ---
 
-## Week 4
-**Period From:** 31/08/2026 **To:** 06/09/2026
-**Date of Meeting:** 31/08/2026
-**Members attended (Reg. No.):** 23BCE8172, 23BCE7421, 23BCE7425, 23BCE7439
-
+## Week 4 (August 25 - August 31)
 **Tasks Completed:**
-- Consolidated the Phase 1 findings into the `00_master_project_log.md` tracking document.
-- Delivered the Review 1 presentation highlighting the dataset-dependency rule of linear architectures.
-- Proposed the pivot from discrete event counting to Semantic NLP models (Word2Vec) for Review 2.
-- Designed a structural log grouping strategy to resolve the "semantic soup" issue in the BGL dataset.
+* Ran the baseline models on the BGL dataset and proved that they fail on complex, unstructured data.
+* Discovered that extracting logs purely by time mixes up unrelated events and ruins accuracy.
 
-**Tasks Planned Next Week:**
-- Implement Node-Based structural grouping with a 6-hour sliding window on BGL logs.
-- Refactor the data pipeline to extract sequential semantic execution paths.
-- Investigate and resolve potential data leakage in Word2Vec training.
-
-**Comments/Suggestion by the Guide:** 
-<br><br><br>
-**Signature of the Guide:** 
+**Tasks Planned for next week:**
+* Create a better way to extract logs by grouping them by their physical hardware node.
+* Research NLP (Natural Language Processing) techniques like Word2Vec to help the AI understand the meaning of the logs.
 
 ---
 
-## Week 5
-**Period From:** 07/09/2026 **To:** 13/09/2026
-**Date of Meeting:** 07/09/2026
-**Members attended (Reg. No.):** 23BCE8172, 23BCE7421, 23BCE7425, 23BCE7439
-
+## Week 5 (September 1 - September 7)
 **Tasks Completed:**
-- Implemented Node-Based structural grouping (Node + Window_ID) on the BGL dataset.
-- Converted parsed BGL log sequences into `bgl_sequences.pkl` to preserve execution paths.
-- Identified an implicit data-leak vulnerability in standard global embedding approaches.
-- Refactored the Word2Vec pipeline to strictly train only on the normal training fold and handle test-set logs as Out-Of-Vocabulary (OOV).
+* Built the node-based log grouping logic to correctly organize the messy BGL logs.
+* Added the Word2Vec algorithm to convert the text logs into numerical data the AI can understand.
 
-**Tasks Planned Next Week:**
-- Implement the deep learning Multi-Layer Perceptron (MLP) Autoencoder architecture.
-- Train the Autoencoder on the 32-D L2-normalized Word2Vec mean-pooled vectors.
-- Implement Dynamic Peaks-Over-Threshold (POT) to automate anomaly thresholding.
-
-**Comments/Suggestion by the Guide:** 
-<br><br><br>
-**Signature of the Guide:** 
+**Tasks Planned for next week:**
+* Replace the basic linear math models with advanced Deep Learning models.
+* Design and build a Deep Autoencoder Neural Network.
 
 ---
 
-## Week 6
-**Period From:** 14/09/2026 **To:** 20/09/2026
-**Date of Meeting:** 14/09/2026
-**Members attended (Reg. No.):** 23BCE8172, 23BCE7421, 23BCE7425, 23BCE7439
-
+## Week 6 (September 8 - September 14)
 **Tasks Completed:**
-- Developed a 3-layer (16-8-16) MLP Autoencoder to capture non-linear semantic manifolds.
-- Integrated the leak-free Word2Vec mean-pooling function directly into the K-Fold evaluation loop (`run_improvements_leak_fixed.py`).
-- Implemented the Extreme Value Theory-based Peaks-Over-Threshold (POT) algorithm.
-- Replaced the hardcoded 95th-percentile heuristic with dynamic POT across all models.
+* Successfully built and trained the Deep Learning Autoencoder on the complex BGL data.
+* Proved that the Autoencoder significantly outperforms the older baseline models.
 
-**Tasks Planned Next Week:**
-- Evaluate the final models and compile the F1, Precision, and Recall metrics.
-- Perform a comparative analysis against standard lightweight and heavyweight models.
-- Prepare the presentation and documentation for Capstone Review 2.
-
-**Comments/Suggestion by the Guide:** 
-<br><br><br>
-**Signature of the Guide:** 
+**Tasks Planned for next week:**
+* Find a way to automate the anomaly threshold instead of relying on human guessing (the top 5% rule).
+* Research statistical methods to make the threshold adapt on its own.
 
 ---
 
-## Week 7
-**Period From:** 21/09/2026 **To:** 27/09/2026
-**Date of Meeting:** 21/09/2026
-**Members attended (Reg. No.):** 23BCE8172, 23BCE7421, 23BCE7425, 23BCE7439
-
+## Week 7 (September 15 - September 21)
 **Tasks Completed:**
-- Finalized HDFS evaluation, achieving a 95.95% F1 score using PCA + POT.
-- Completed 5-fold cross-validation on the BGL dataset with the leak-free Autoencoder, yielding Precision: 97.50%, Recall: 81.71%, and F1: 88.88%.
-- Conducted a comparative analysis, proving our lightweight semantic approach effectively bridges the gap to heavyweight Graph Neural Networks.
-- Drafted and formatted the Capstone Review 2 presentation slides.
+* Added the dynamic POT (Peaks-Over-Threshold) mathematical algorithm to our pipeline.
+* Successfully made the system autonomous, allowing it to flag anomalies automatically without human input.
 
-**Tasks Planned Next Week:**
-- Research and design an LSTM sequence model to capture long-term temporal dependencies.
-- Address the zero-padding dilution issues commonly found in variable-length log sequences.
-- Compare the upcoming LSTM implementation against heavy Transformer models for Review 3.
+**Tasks Planned for next week:**
+* Audit the code to ensure there is no unfair data leakage between the training and testing phases.
+* Write a strict testing loop to guarantee the results are mathematically stable.
 
-**Comments/Suggestion by the Guide:** 
-<br><br><br>
-**Signature of the Guide:** 
+---
+
+## Week 8 (September 22 - September 28)
+**Tasks Completed:**
+* Implemented a strict 10-fold cross-validation testing loop to ensure zero data leakage.
+* Finalized all the code, permanently saved the best models, and locked in a highly robust final accuracy score.
+
+**Tasks Planned for next week:**
+* Prepare presentation slides and comprehensive report for the Capstone Review.
+
+---
+
+## Week 9 (September 29 - October 5)
+**Tasks Completed:**
+* Prepared presentation slides for the Capstone Review.
+* Practiced answering anticipated reviewer questions and delivered the final presentation.
+
+**Tasks Planned for next week:**
+* Review project feedback and plan future improvements (if any).

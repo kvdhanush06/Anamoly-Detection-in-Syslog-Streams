@@ -1,2 +1,8 @@
 venv/
 data/
+hdfs_improvement/features.npz
+*.npz
+__pycache__/
+*.py[cod]
+.DS_Store
+*/.DS_Store

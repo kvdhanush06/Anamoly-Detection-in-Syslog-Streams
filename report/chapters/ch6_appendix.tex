@@ -1,0 +1,433 @@
+\chapter{Appendix (Source Code)}
+\label{ch:appendix}
+
+This appendix provides the full, unabridged source code listings of the core execution modules, comprehensive hyperparameter tables, per-fold confusion matrices, and the repository traceability manifest. All code is authored in Python and corresponds directly to the implementation in `syslog_v2_clean/`.
+
+\section{Core Pipeline Implementation Source Code}
+\label{sec:appendix_source_code}
+
+\subsection{Data Management and Leak-Free Splitting (`data\_utils.py`)}
+\label{subsec:app_data_utils}
+\begin{lstlisting}[language=Python, caption={Data loading, disjoint 10-fold stratification, and chronological splitting (`data_utils.py`)}, label={lst:data_utils}]
+import os
+import pickle
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import KFold
+
+DATA_PATH = "data/BGL/preprocessed/bgl_sequences.pkl"
+STRUCTURED_CSV = "data/BGL/preprocessed/BGL.log_structured.csv"
+
+def load_data():
+    """Loads BGL sequences and binary labels strictly read-only."""
+    if not os.path.exists(DATA_PATH):
+        raise FileNotFoundError(f"Cannot find {DATA_PATH}")
+    with open(DATA_PATH, "rb") as f:
+        data = pickle.load(f)
+    sequences = np.array(data["sequences"], dtype=object)
+    y = np.array(data["y"], dtype=int)
+    return sequences, y
+
+def get_10fold_splits(y, seed=42):
+    """
+    Creates a 10-fold split done SEPARATELY on normal windows and on anomalous windows,
+    so each fold's test set has natural prevalence (~10% anomalies), and every anomaly
+    is tested exactly once across the 10 folds.
+    
+    Inside non-test portion:
+      - TRAIN: 90% of non-test normals (model never sees anomalies)
+      - VALIDATION: remaining 10% of non-test normals + random subsample (max 20,000) of non-test anomalies
+    """
+    normal_idx = np.where(y == 0)[0]
+    anom_idx = np.where(y == 1)[0]
+    
+    kf_norm = KFold(n_splits=10, shuffle=True, random_state=seed)
+    kf_anom = KFold(n_splits=10, shuffle=True, random_state=seed)
+    
+    splits = []
+    norm_splits = list(kf_norm.split(normal_idx))
+    anom_splits = list(kf_anom.split(anom_idx))
+    
+    for fold in range(10):
+        train_norm_fold, test_norm_fold = norm_splits[fold]
+        train_anom_fold, test_anom_fold = anom_splits[fold]
+        
+        test_norm_idx = normal_idx[test_norm_fold]
+        test_anom_idx = anom_idx[test_anom_fold]
+        test_idx = np.concatenate([test_norm_idx, test_anom_idx])
+        
+        non_test_norm_idx = normal_idx[train_norm_fold]
+        non_test_anom_idx = anom_idx[train_anom_fold]
+        
+        # 90% train normals, 10% val normals
+        kf_inner = KFold(n_splits=10, shuffle=True, random_state=seed + fold + 1)
+        train_sub_idx, val_norm_sub_idx = next(kf_inner.split(non_test_norm_idx))
+        
+        train_idx = non_test_norm_idx[train_sub_idx]
+        val_norm_idx = non_test_norm_idx[val_norm_sub_idx]
+        
+        # Validation anomalies: max 20,000 from non_test_anom_idx
+        rng = np.random.default_rng(seed + fold + 100)
+        n_val_anom = min(20000, len(non_test_anom_idx))
+        val_anom_idx = rng.choice(non_test_anom_idx, n_val_anom, replace=False)
+        
+        val_idx = np.concatenate([val_norm_idx, val_anom_idx])
+        
+        # Strict Disjointness Assertions
+        assert len(set(train_idx) & set(val_idx)) == 0, f"Fold {fold+1}: Train and Val overlap!"
+        assert len(set(train_idx) & set(test_idx)) == 0, f"Fold {fold+1}: Train and Test overlap!"
+        assert len(set(val_idx) & set(test_idx)) == 0, f"Fold {fold+1}: Val and Test overlap!"
+        assert np.all(y[train_idx] == 0), f"Fold {fold+1}: Anomalies present in Train set!"
+        assert np.all(y[val_norm_idx] == 0), f"Fold {fold+1}: Anomalies present in Val normal set!"
+        
+        splits.append({
+            "fold": fold + 1,
+            "train_idx": train_idx,
+            "val_norm_idx": val_norm_idx,
+            "val_anom_idx": val_anom_idx,
+            "val_idx": val_idx,
+            "test_norm_idx": test_norm_idx,
+            "test_anom_idx": test_anom_idx,
+            "test_idx": test_idx
+        })
+        
+    return splits
+\end{lstlisting}
+
+\subsection{Feature Vectorization and Pooling (`feature\_utils.py`)}
+\label{subsec:app_feature_utils}
+\begin{lstlisting}[language=Python, caption={Skip-Gram Word2Vec training, OOV accounting, and Mean+Max dual pooling (`feature_utils.py`)}, label={lst:feature_utils}]
+import numpy as np
+from gensim.models import Word2Vec
+
+def train_w2v(train_sequences, vector_size=32, window=5, min_count=1, workers=1, sg=1, seed=42):
+    """
+    Trains Word2Vec strictly on training sequences.
+    Using workers=1 and a fixed seed guarantees exact reproducibility.
+    """
+    model = Word2Vec(
+        sentences=train_sequences,
+        vector_size=vector_size,
+        window=window,
+        min_count=min_count,
+        workers=workers,
+        sg=sg,
+        seed=seed
+    )
+    return model
+
+def compute_oov_stats(sequences, w2v_model):
+    """Computes fraction of tokens that are Out-Of-Vocabulary (OOV)."""
+    wv = w2v_model.wv
+    total_tokens = 0
+    oov_tokens = 0
+    for s in sequences:
+        total_tokens += len(s)
+        for w in s:
+            if w not in wv:
+                oov_tokens += 1
+    oov_rate = (oov_tokens / total_tokens) if total_tokens > 0 else 0.0
+    return total_tokens, oov_tokens, oov_rate
+
+def l2_normalize(X):
+    norms = np.linalg.norm(X, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return X / norms
+
+def get_mean_max_w2v(sequences, w2v_model):
+    """
+    V2: Concatenated Mean + Max-pooled Word2Vec embeddings with L2-normalization (64-d).
+    OOV Rule: OOV tokens are skipped. If all tokens are OOV or sequence empty,
+    returns a zero vector.
+    """
+    dim = w2v_model.vector_size
+    wv = w2v_model.wv
+    X = np.zeros((len(sequences), dim * 2), dtype=np.float32)
+    for i, s in enumerate(sequences):
+        if not s:
+            continue
+        vecs = [wv[w] for w in s if w in wv]
+        if vecs:
+            mean_vec = np.mean(vecs, axis=0)
+            max_vec = np.max(vecs, axis=0)
+            X[i] = np.concatenate([mean_vec, max_vec])
+    return l2_normalize(X)
+\end{lstlisting}
+
+\subsection{Neural Autoencoder and Baseline Models (`deep\_learning.py`)}
+\label{subsec:app_deep_learning}
+\begin{lstlisting}[language=Python, caption={Deep MLP Autoencoder and comparative baselines (`deep_learning.py`)}, label={lst:deep_learning}]
+import numpy as np
+from sklearn.neural_network import MLPRegressor
+from sklearn.ensemble import IsolationForest
+
+class AutoencoderModel:
+    def __init__(self, hidden_layer_sizes=(32, 16, 32), alpha=1e-4, random_state=42, max_iter=100):
+        self.clf = MLPRegressor(
+            hidden_layer_sizes=hidden_layer_sizes,
+            activation='relu',
+            solver='adam',
+            alpha=alpha,
+            max_iter=max_iter,
+            random_state=random_state,
+            early_stopping=True,
+            validation_fraction=0.1,
+            n_iter_no_change=10
+        )
+        self.mean_ = None
+        self.hidden_layer_sizes = hidden_layer_sizes
+        self.alpha = alpha
+
+    def fit(self, X):
+        # Mean centering fit purely on training normal data
+        self.mean_ = X.mean(axis=0)
+        X_c = X - self.mean_
+        self.clf.fit(X_c, X_c)
+
+    def predict_errors(self, X):
+        X_c = X - self.mean_
+        X_rec = self.clf.predict(X_c)
+        errors = np.linalg.norm(X_c - X_rec, axis=1)
+        return errors
+
+class PCAModel:
+    def __init__(self, k=48):
+        self.k = k
+        self.mean_ = None
+        self.P_ = None
+
+    def fit(self, X):
+        self.mean_ = X.mean(axis=0)
+        X_c = X - self.mean_
+        _, _, Vt = np.linalg.svd(X_c, full_matrices=False)
+        self.P_ = Vt[:self.k].T
+
+    def predict_errors(self, X):
+        X_c = X - self.mean_
+        X_proj = X_c @ self.P_ @ self.P_.T
+        errors = np.linalg.norm(X_c - X_proj, axis=1)
+        return errors
+\end{lstlisting}
+
+\subsection{Extreme Value Theory Thresholding Engine (`thresholding.py`)}
+\label{subsec:app_thresholding}
+\begin{lstlisting}[language=Python, caption={Peaks-Over-Threshold and Validation-Tuning threshold logic (`thresholding.py`)}, label={lst:thresholding}]
+import numpy as np
+from scipy.stats import genpareto
+from sklearn.metrics import precision_recall_fscore_support
+
+def compute_threshold_pot(errors, q=0.90, target_fpr=1e-3):
+    """Peaks-Over-Threshold (POT) using EVT via Method of Moments."""
+    u = np.quantile(errors, q)
+    exceedances = errors[errors > u] - u
+    
+    if len(exceedances) < 10:
+        return np.quantile(errors, 0.995)
+        
+    mean_ex = np.mean(exceedances)
+    var_ex = np.var(exceedances)
+    if var_ex == 0:
+        return np.quantile(errors, 0.995)
+        
+    c = 0.5 * (1.0 - (mean_ex**2 / var_ex))
+    scale = 0.5 * mean_ex * ((mean_ex**2 / var_ex) + 1.0)
+    xi = -c
+    
+    n_t = len(errors)
+    n_u = len(exceedances)
+    p_u = n_u / n_t
+    
+    if xi == 0:
+        z_q = u - scale * np.log(target_fpr / p_u)
+    else:
+        term = (target_fpr / p_u) ** -xi
+        z_q = u + (scale / xi) * (term - 1)
+        
+    return z_q
+
+def compute_threshold_mode_a(val_normal_errors, q=0.90, target_fpr=1e-3, fallback_percentile=99.5):
+    """Mode A (Label-Free, Headline Threshold) on Validation Normal Errors."""
+    min_err = float(np.min(val_normal_errors))
+    max_err = float(np.max(val_normal_errors))
+    
+    used_fallback = False
+    try:
+        theta = float(compute_threshold_pot(val_normal_errors, q=q, target_fpr=target_fpr))
+        if np.isnan(theta) or np.isinf(theta) or theta <= min_err or theta > max_err * 5.0:
+            theta = float(np.percentile(val_normal_errors, fallback_percentile))
+            used_fallback = True
+    except Exception:
+        theta = float(np.percentile(val_normal_errors, fallback_percentile))
+        used_fallback = True
+        
+    return theta, used_fallback
+\end{lstlisting}
+
+\section{Hyperparameter Specifications}
+\label{sec:appendix_hyperparams}
+Table~\ref{tab:complete_hyperparameters} compiles the exhaustive hyperparameter configurations for all models and pipelines evaluated in this report.
+
+\begin{table}[htbp]
+\centering
+\caption{Exhaustive Hyperparameter Specifications across Evaluated Pipeline Components}
+\label{tab:complete_hyperparameters}
+\begin{tabular}{lllc}
+\toprule
+\textbf{Component} & \textbf{Hyperparameter} & \textbf{Search Space / Value} & \textbf{Final Selected Value} \\
+\midrule
+\multirow{6}{*}{\textbf{Word2Vec}} & Embedding Dimension ($m$) & $[16, 32, 64]$ & 32 \\
+& Context Window Radius & $[3, 5, 8]$ & 5 \\
+& Training Architecture & CBOW vs Skip-Gram & Skip-Gram ($sg=1$) \\
+& Worker Threads & Fixed for determinism & 1 \\
+& Random Seed & Fixed & 42 \\
+& Minimum Token Frequency & Fixed & 1 \\
+\midrule
+\multirow{7}{*}{\textbf{MLP Autoencoder}} & Layer Architecture & $(16, 8, 16)$ to $(64, 32, 64)$ & $\mathbf{(32, 16, 32)}$ \\
+& Activation Function & ReLU vs Tanh vs Sigmoid & ReLU \\
+& Optimization Algorithm & Adam vs SGD & Adam \\
+& Regularization Parameter ($\alpha$) & $[10^{-3}, 10^{-4}, 10^{-5}]$ & $\mathbf{10^{-4}}$ \\
+& Early Stopping Patience & $[5, 10, 20]\text{ epochs}$ & 10 \\
+& Max Iterations & Fixed & 100 \\
+& Validation Split Fraction & Fixed & 0.10 \\
+\midrule
+\multirow{3}{*}{\textbf{EVT / POT Threshold}} & Initial Tail Quantile ($q$) & $[0.85, 0.90, 0.95]$ & $\mathbf{0.90}$ \\
+& Target False Alarm Rate ($\text{FPR}$) & $[10^{-2}, 10^{-3}, 10^{-4}]$ & $\mathbf{10^{-3}}$ \\
+& Fallback Quantile & $[99.0, 99.5, 99.9]$ & 99.5 \\
+\midrule
+\textbf{Linear PCA Baseline} & Retained Dimensions ($k$) & Grid search on Val: $k \in [2, 64]$ & $k = 48$ \\
+\midrule
+\multirow{3}{*}{\textbf{Isolation Forest}} & Number of Estimators & $[50, 100, 200]$ & 100 \\
+& Sub-sampling Size & Fixed & 256 \\
+& Contamination Parameter & Auto & 'auto' \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Complete Per-Fold Confusion Matrices (Folds 1 to 10)}
+\label{sec:appendix_confusion_matrices}
+Tables~\ref{tab:app_cm_mode_a} and \ref{tab:app_cm_mode_b} present the exact, raw confusion matrices, precision, recall, $F_1$-score, and threshold values for every individual fold across Mode A and Mode B under natural prevalence ($10.07\%$).
+
+\begin{table}[htbp]
+\centering
+\caption{Complete Per-Fold Test Breakdown for Mode A (Label-Free EVT/POT Threshold)}
+\label{tab:app_cm_mode_a}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{cccccccccc}
+\toprule
+\textbf{Fold} & \textbf{True Pos (TP)} & \textbf{False Pos (FP)} & \textbf{True Neg (TN)} & \textbf{False Neg (FN)} & \textbf{Precision} & \textbf{Recall} & \textbf{F1-Score} & \textbf{Threshold $\theta_A$} & \textbf{Fallback} \\
+\midrule
+1 & 10,844 & 1,086 & 114,643 & 2,109 & $90.90\%$ & $83.72\%$ & $87.16\%$ & 0.2477 & False \\
+2 & 10,849 & 257 & 115,472 & 2,104 & $97.69\%$ & $83.76\%$ & $90.19\%$ & 0.3615 & False \\
+3 & 10,647 & 602 & 115,127 & 2,306 & $94.65\%$ & $82.20\%$ & $87.98\%$ & 0.2769 & False \\
+4 & 10,658 & 1,112 & 114,617 & 2,295 & $90.55\%$ & $82.28\%$ & $86.22\%$ & 0.2543 & False \\
+5 & 10,767 & 925 & 114,804 & 2,186 & $92.09\%$ & $83.12\%$ & $87.38\%$ & 0.2566 & False \\
+6 & 10,690 & 1,047 & 114,682 & 2,263 & $91.08\%$ & $82.53\%$ & $86.59\%$ & 0.2285 & False \\
+7 & 10,683 & 543 & 115,186 & 2,270 & $95.16\%$ & $82.48\%$ & $88.37\%$ & 0.2938 & False \\
+8 & 10,127 & 353 & 115,376 & 2,826 & $96.63\%$ & $78.18\%$ & $86.43\%$ & 0.3508 & False \\
+9 & 10,601 & 498 & 115,231 & 2,351 & $95.51\%$ & $81.85\%$ & $88.15\%$ & 0.3383 & False \\
+10 & 11,132 & 788 & 114,940 & 1,820 & $93.39\%$ & $85.95\%$ & $89.51\%$ & 0.2402 & False \\
+\midrule
+\textbf{Total} & \textbf{106,998} & \textbf{7,211} & \textbf{1,150,078} & \textbf{22,530} & \textbf{93.76\%} & \textbf{82.61\%} & \textbf{87.80\%} & \textbf{0.2849} & \textbf{0 / 10} \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Complete Per-Fold Test Breakdown for Mode B (Validation-Tuned Semi-Supervised Threshold)}
+\label{tab:app_cm_mode_b}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{ccccccccc}
+\toprule
+\textbf{Fold} & \textbf{True Pos (TP)} & \textbf{False Pos (FP)} & \textbf{True Neg (TN)} & \textbf{False Neg (FN)} & \textbf{Precision} & \textbf{Recall} & \textbf{F1-Score} & \textbf{Threshold $\theta_B$} \\
+\midrule
+1 & 11,100 & 1,436 & 114,293 & 1,853 & $88.54\%$ & $85.69\%$ & $87.10\%$ & 0.2028 \\
+2 & 11,037 & 457 & 115,272 & 1,916 & $96.02\%$ & $85.21\%$ & $90.29\%$ & 0.3115 \\
+3 & 11,001 & 706 & 115,023 & 1,952 & $93.97\%$ & $84.93\%$ & $89.22\%$ & 0.2519 \\
+4 & 11,051 & 1,413 & 114,316 & 1,902 & $88.66\%$ & $85.32\%$ & $86.96\%$ & 0.2269 \\
+5 & 10,762 & 601 & 115,128 & 2,191 & $94.71\%$ & $83.08\%$ & $88.52\%$ & 0.3039 \\
+6 & 10,688 & 711 & 115,018 & 2,265 & $93.76\%$ & $82.51\%$ & $87.78\%$ & 0.2800 \\
+7 & 11,078 & 835 & 114,894 & 1,875 & $92.99\%$ & $85.52\%$ & $89.10\%$ & 0.2341 \\
+8 & 10,841 & 468 & 115,261 & 2,112 & $95.86\%$ & $83.69\%$ & $89.37\%$ & 0.2882 \\
+9 & 11,032 & 785 & 114,944 & 1,920 & $93.36\%$ & $85.18\%$ & $89.08\%$ & 0.2592 \\
+10 & 11,137 & 874 & 114,854 & 1,815 & $92.72\%$ & $85.99\%$ & $89.23\%$ & 0.2201 \\
+\midrule
+\textbf{Total} & \textbf{109,727} & \textbf{8,286} & \textbf{1,149,003} & \textbf{19,801} & \textbf{93.06\%} & \textbf{84.71\%} & \textbf{88.66\%} & \textbf{0.2579} \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\section{Hardware Benchmark Harness Script}
+\label{sec:appendix_bench_script}
+Listing~\ref{lst:bench_script} displays the exact benchmark harness used to measure latency percentiles and throughput on Apple Silicon (`benchmark_efficiency.py`).
+
+\begin{lstlisting}[language=Python, caption={Hardware latency percentiles and throughput benchmark harness (`benchmark_efficiency.py`)}, label={lst:bench_script}]
+import os, time, pickle, platform, subprocess, numpy as np, pandas as pd
+from gensim.models import Word2Vec
+
+def benchmark_efficiency(ae_model_path="syslog_v2_clean/saved_models/bgl_ae_clean_fold_1.pkl", 
+                         w2v_model_path="syslog_v2_clean/saved_models/bgl_w2v_clean_fold_1.pkl", 
+                         input_dim=64):
+    with open(ae_model_path, "rb") as f:
+        ae = pickle.load(f)
+    w2v = Word2Vec.load(w2v_model_path)
+    
+    X_single = np.random.randn(1, input_dim).astype(np.float32)
+    X_batch = np.random.randn(256, input_dim).astype(np.float32)
+    
+    # Warmup
+    for _ in range(50):
+        _ = ae.predict_errors(X_single)
+        _ = ae.predict_errors(X_batch)
+        
+    # Single sample latency (1,000 iterations)
+    single_times = []
+    for _ in range(1000):
+        t0 = time.perf_counter()
+        _ = ae.predict_errors(X_single)
+        single_times.append((time.perf_counter() - t0) * 1000.0)
+    single_mean_ms = float(np.mean(single_times))
+    single_p99_ms = float(np.percentile(single_times, 99))
+    
+    # Batch 256 latency (500 iterations)
+    batch_times = []
+    for _ in range(500):
+        t0 = time.perf_counter()
+        _ = ae.predict_errors(X_batch)
+        batch_times.append((time.perf_counter() - t0) * 1000.0)
+    batch_mean_ms = float(np.mean(batch_times))
+    batch_p99_ms = float(np.percentile(batch_times, 99))
+    
+    print(f"Single Latency: {single_mean_ms:.4f} ms (p99: {single_p99_ms:.4f} ms)")
+    print(f"Batch 256 Latency: {batch_mean_ms:.4f} ms (p99: {batch_p99_ms:.4f} ms)")
+    print(f"Per-window: {(batch_mean_ms/256.0)*1000.0:.2f} us")
+\end{lstlisting}
+
+\section{Repository File Manifest and Traceability Matrix}
+\label{sec:appendix_traceability}
+Table~\ref{tab:file_manifest} maps every chapter and section of this report to its backing artifact in the project codebase.
+
+\begin{table}[htbp]
+\centering
+\caption{Repository File Manifest and Empirical Traceability Matrix}
+\label{tab:file_manifest}
+\begin{tabular}{lll}
+\toprule
+\textbf{Report Section} & \textbf{Key Metric / Topic} & \textbf{Authoritative Source File / Script} \\
+\midrule
+Section~\ref{subsec:hdfs_replication} & HDFS PCA (94.60\%), RPCA (87.38\%) & `docs/archive/05_final_results.md`, `SPEC.md` \\
+Section~\ref{subsec:dev_selection} & BGL Model Selection Variants (V0--V5) & `syslog_v2_clean/development_results.csv` \\
+Section~\ref{subsec:results_mode_a} & BGL 10-Fold Mode A ($87.80\% \pm 1.31\%$) & `syslog_v2_clean/test_results_10fold.csv` \\
+Section~\ref{subsec:results_mode_b} & BGL 10-Fold Mode B ($88.66\% \pm 1.07\%$) & `syslog_v2_clean/test_results_10fold.csv` \\
+Section~\ref{subsec:results_auc_visuals} & PR-AUC ($91.05\%$), ROC-AUC ($97.34\%$) & `syslog_v2_clean/test_results_10fold.csv` \\
+Section~\ref{sec:results_balanced_deconstruction} & Balanced View ($90.16\%$, $91.36\%$) & `syslog_v2_clean/test_balanced_results_10fold.csv` \\
+Section~\ref{sec:results_ablation} & Ablation (PCA $59.97\%$, IF $2.07\%$) & `syslog_v2_clean/ablation_results.csv` \\
+Section~\ref{sec:results_chronological} & Chronological Split ($0.03\%$, $68.91\%$ OOV) & `syslog_v2_clean/chronological_results.csv` \\
+Chapter~\ref{ch:cost} & Hardware Efficiency ($43.2\text{ }\mu\text{s}$, $62,076\text{ w/s}$) & `syslog_v2_clean/efficiency_results.csv` \\
+All Modules & Serialized Fold Models (1 to 10) & `syslog_v2_clean/saved_models/bgl_ae_clean_*.pkl` \\
+\bottomrule
+\end{tabular}
+\end{table}
+

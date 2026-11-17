@@ -1,0 +1,2 @@
+hardware_cpu,hardware_arch,hardware_ram,hardware_os,model_parameters,saved_model_kb,single_sample_mean_ms,single_sample_p99_ms,batch_256_mean_ms,batch_256_p99_ms,per_window_batch_latency_us,e2e_throughput_windows_per_sec
+Apple M2,arm64,8.0 GB,macOS-15.8.1-arm64-arm-64bit-Mach-O,5328,70.2470703125,0.043232327414443716,0.04763040458783507,0.09586621983908117,0.11105740821221842,0.3744774212464108,62076.34484703016
