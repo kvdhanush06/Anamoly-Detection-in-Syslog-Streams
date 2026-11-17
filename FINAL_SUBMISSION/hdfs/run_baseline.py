@@ -6,13 +6,38 @@ from sklearn.metrics import precision_recall_fscore_support
 from sklearn.model_selection import KFold
 import pickle
 
-# Add the baseline_replication models folder to sys.path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from models.pca_rpca import PCAModel
+# Add script directory and repo root to sys.path
+import types
+script_dir = os.path.dirname(os.path.abspath(__file__))
+repo_root = os.path.abspath(os.path.join(script_dir, "..", ".."))
+sys.path.insert(0, script_dir)
 
-os.makedirs("saved_models", exist_ok=True)
+try:
+    from pca_rpca import PCAModel
+except ImportError:
+    try:
+        from models.pca_rpca import PCAModel
+    except ImportError:
+        import pca_rpca
+        PCAModel = pca_rpca.PCAModel
 
-HDFS_FEATURES_COUNT = "data/HDFS_v1/preprocessed/features.npz"
+if 'models' not in sys.modules:
+    import pca_rpca
+    m = types.ModuleType('models')
+    m.pca_rpca = pca_rpca
+    sys.modules['models'] = m
+    sys.modules['models.pca_rpca'] = pca_rpca
+
+os.makedirs(os.path.join(script_dir, "saved_models"), exist_ok=True)
+
+potential_paths = [
+    os.path.join(repo_root, "data/HDFS_v1/preprocessed/features.npz"),
+    os.path.join(repo_root, "hdfs_improvement/features.npz"),
+    os.path.join(script_dir, "features.npz"),
+    "data/HDFS_v1/preprocessed/features.npz",
+    "features.npz",
+]
+HDFS_FEATURES_COUNT = next((p for p in potential_paths if os.path.exists(p)), potential_paths[0])
 
 def l2_normalize(X):
     norms = np.linalg.norm(X, axis=1, keepdims=True)
@@ -57,7 +82,7 @@ def run_hdfs_paper_exact_protocol():
         Xt = X[test_idx]
         y_test = y[test_idx]
         
-        model_path = f"saved_models/hdfs_pca_fold_{fold}.pkl"
+        model_path = os.path.join(script_dir, "saved_models", f"hdfs_pca_fold_{fold}.pkl")
         if os.path.exists(model_path):
             print(f"Fold {fold}: Loading saved model from {model_path}...")
             with open(model_path, "rb") as f:
@@ -142,7 +167,7 @@ def run_bgl_baseline():
         Xt = X[test_idx]
         y_test = y[test_idx]
         
-        model_path = f"saved_models/bgl_pca_fold_{fold}.pkl"
+        model_path = os.path.join(script_dir, "saved_models", f"bgl_pca_fold_{fold}.pkl")
         if os.path.exists(model_path):
             print(f"Fold {fold}: Loading saved model from {model_path}...")
             with open(model_path, "rb") as f:

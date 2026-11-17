@@ -16,15 +16,34 @@ import pickle
 # 3. Just run: python run_hdfs_pot.py
 # -------------------------------------------------------------------------
 
-# Import from the same directory since we copied the files here
+# Add script directory and repo root to sys.path
+import types
+script_dir = os.path.dirname(os.path.abspath(__file__))
+repo_root = os.path.abspath(os.path.join(script_dir, "..", ".."))
+sys.path.insert(0, script_dir)
+
 from pca_rpca import PCAModel
 from thresholding import compute_threshold_pot
 
-# Update this path if you move the features.npz file somewhere else
-PATH_TO_DATA = "features.npz"
+if 'models' not in sys.modules:
+    import pca_rpca
+    m = types.ModuleType('models')
+    m.pca_rpca = pca_rpca
+    sys.modules['models'] = m
+    sys.modules['models.pca_rpca'] = pca_rpca
+
+# Dynamic data path search
+potential_paths = [
+    os.path.join(script_dir, "features.npz"),
+    os.path.join(repo_root, "hdfs_improvement/features.npz"),
+    os.path.join(repo_root, "data/HDFS_v1/preprocessed/features.npz"),
+    "features.npz",
+    "data/HDFS_v1/preprocessed/features.npz",
+]
+PATH_TO_DATA = next((p for p in potential_paths if os.path.exists(p)), potential_paths[0])
 
 # We save the models locally in a subfolder so it doesn't clutter
-os.makedirs("saved_models", exist_ok=True)
+os.makedirs(os.path.join(script_dir, "saved_models"), exist_ok=True)
 
 def l2_normalize(X):
     # This is the undocumented trick that makes PCA work perfectly on HDFS!
@@ -71,7 +90,7 @@ def run_hdfs_pot_improvement():
         
         Xf, Xt, y_test = X[fit_idx], X[test_idx], y[test_idx]
         
-        model_path = f"saved_models/hdfs_pot_pca_fold_{fold}.pkl"
+        model_path = os.path.join(script_dir, "saved_models", f"hdfs_pot_pca_fold_{fold}.pkl")
         
         # 6. Load saved model if it exists, otherwise train a new one
         if os.path.exists(model_path):

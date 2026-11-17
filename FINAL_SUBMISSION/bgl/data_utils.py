@@ -4,8 +4,24 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import KFold
 
-DATA_PATH = "data/BGL/preprocessed/bgl_sequences.pkl"
-STRUCTURED_CSV = "data/BGL/preprocessed/BGL.log_structured.csv"
+script_dir = os.path.dirname(os.path.abspath(__file__))
+repo_root = os.path.abspath(os.path.join(script_dir, "..", ".."))
+
+potential_pkl = [
+    os.path.join(repo_root, "data/BGL/preprocessed/bgl_sequences.pkl"),
+    os.path.join(script_dir, "data/BGL/preprocessed/bgl_sequences.pkl"),
+    "data/BGL/preprocessed/bgl_sequences.pkl",
+    "bgl_sequences.pkl"
+]
+DATA_PATH = next((p for p in potential_pkl if os.path.exists(p)), potential_pkl[0])
+
+potential_csv = [
+    os.path.join(repo_root, "data/BGL/preprocessed/BGL.log_structured.csv"),
+    os.path.join(script_dir, "data/BGL/preprocessed/BGL.log_structured.csv"),
+    "data/BGL/preprocessed/BGL.log_structured.csv",
+    "BGL.log_structured.csv"
+]
+STRUCTURED_CSV = next((p for p in potential_csv if os.path.exists(p)), potential_csv[0])
 
 def load_data():
     """Loads BGL sequences and binary labels strictly read-only."""

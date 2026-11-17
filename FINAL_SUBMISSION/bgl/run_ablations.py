@@ -172,7 +172,15 @@ def run_ablations(feature_type="mean_max"):
         })
 
     df = pd.DataFrame(ablation_records)
-    out_csv = "syslog_v2_clean/ablation_results.csv"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.abspath(os.path.join(script_dir, "..", ".."))
+    if os.path.exists(os.path.join(repo_root, "FINAL_SUBMISSION", "results")):
+        out_csv = os.path.join(repo_root, "FINAL_SUBMISSION", "results", "ablation_results.csv")
+    elif os.path.exists(os.path.join(repo_root, "syslog_v2_clean")):
+        out_csv = os.path.join(repo_root, "syslog_v2_clean", "ablation_results.csv")
+    else:
+        out_csv = os.path.join(script_dir, "ablation_results.csv")
+
     df.to_csv(out_csv, index=False)
     print(f"\nAblations complete! Saved to {out_csv}")
     

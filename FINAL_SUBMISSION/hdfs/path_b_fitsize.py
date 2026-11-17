@@ -6,10 +6,22 @@ Varying fit size: 5k, 10k, 15k, 20k, 25k.
 
 Run from project root: python src/path_b_fitsize.py
 """
+import os
+import sys
 import numpy as np
 from sklearn.metrics import precision_recall_fscore_support
 
-FEATURES_PATH = "data/HDFS_v1/preprocessed/features.npz"
+script_dir = os.path.dirname(os.path.abspath(__file__))
+repo_root = os.path.abspath(os.path.join(script_dir, "..", ".."))
+
+potential_paths = [
+    os.path.join(script_dir, "features.npz"),
+    os.path.join(repo_root, "hdfs_improvement/features.npz"),
+    os.path.join(repo_root, "data/HDFS_v1/preprocessed/features.npz"),
+    "data/HDFS_v1/preprocessed/features.npz",
+    "features.npz",
+]
+FEATURES_PATH = next((p for p in potential_paths if os.path.exists(p)), potential_paths[0])
 N_NORMAL_SAMPLE = 25_000
 N_ABNORMAL_SAMPLE = 1_000
 

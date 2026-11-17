@@ -110,7 +110,17 @@ def run_chronological(best_arch=(32, 16, 32), best_alpha=1e-4, feature_type="mea
         "mode_b_p": p_b, "mode_b_r": r_b, "mode_b_f1": f1_b,
         "pr_auc": pr_auc, "roc_auc": roc_auc
     }
-    pd.DataFrame([res]).to_csv("syslog_v2_clean/chronological_results.csv", index=False)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.abspath(os.path.join(script_dir, "..", ".."))
+    if os.path.exists(os.path.join(repo_root, "FINAL_SUBMISSION", "results")):
+        out_csv = os.path.join(repo_root, "FINAL_SUBMISSION", "results", "chronological_results.csv")
+    elif os.path.exists(os.path.join(repo_root, "syslog_v2_clean")):
+        out_csv = os.path.join(repo_root, "syslog_v2_clean", "chronological_results.csv")
+    else:
+        out_csv = os.path.join(script_dir, "chronological_results.csv")
+
+    pd.DataFrame([res]).to_csv(out_csv, index=False)
+    print(f"Results saved to: {out_csv}")
     return res
 
 if __name__ == "__main__":
