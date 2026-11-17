@@ -2,7 +2,7 @@
 
 This package contains the self-contained, canonical code, pre-trained model weights, results CSVs, and pinned dependencies to reproduce every experimental table and claim in the research paper:
 
-> **"Bridging Linear Baselines and Lightweight Deep Representations for Scalable Log Anomaly Detection"**
+> **"Lightweight Reconstruction Modeling and Autonomous Extreme Value Thresholding for Syslog Anomaly Detection"**
 
 ---
 
